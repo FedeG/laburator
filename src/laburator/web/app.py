@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from weasyprint import HTML
 from pydantic import BaseModel
 
+from laburator.api import JobSearchAdapter, JobSearchFilters, OpenNinjaJobSearchClient
 from laburator.config import LaburatorConfig
 from laburator.llm.service import LLMService
 from laburator.skills import (
@@ -27,10 +28,13 @@ from laburator.skills import (
     load_skill,
     response_format,
 )
+from laburator.store import DECISION_PENDING, VALID_DECISIONS, JobIndexStore, job_key
 
 
 config = LaburatorConfig()
 logger = logging.getLogger(__name__)
+store = JobIndexStore(config.resolved_output_dir)
+
 
 class GenerateRequest(BaseModel):
     job_description: str
@@ -40,6 +44,35 @@ class GenerateRequest(BaseModel):
 
 class SaveContent(BaseModel):
     content: str
+
+
+class SearchRequest(BaseModel):
+    query: str
+    num_pages: int = 1
+    country: str = "us"
+    remote_only: bool = False
+    date_posted: str = "all"
+    employment_types: str = ""
+    page: int = 1
+    source: str = "openninja"
+
+
+class DecisionRequest(BaseModel):
+    job_key: str
+    decision: str
+    notes: str = ""
+
+
+def _get_search_adapter(source: str) -> JobSearchAdapter:
+    src = (source or "openninja").lower()
+    if src == "openninja":
+        if not config.job_search_api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="JOB_SEARCH_API_KEY is not configured for source 'openninja'.",
+            )
+        return JobSearchAdapter(OpenNinjaJobSearchClient(config.job_search_api_key))
+    raise HTTPException(status_code=400, detail=f"Unknown search source '{source}'.")
 
 
 def _slugify(text: str) -> str:
@@ -411,6 +444,91 @@ async def convert_pdf(body: PdfConvertBody):
             "Content-Disposition": f'attachment; filename="{pdf_name}"',
         },
     )
+
+
+# ── Discovery / Search endpoints ────────────────────────────────────────
+
+
+@app.post("/api/search")
+async def api_search(request: SearchRequest):
+    adapter = _get_search_adapter(request.source)
+    filters = JobSearchFilters(
+        query=request.query,
+        num_pages=request.num_pages,
+        country=request.country,
+        date_posted=request.date_posted,
+        remote_only=request.remote_only,
+        employment_types=request.employment_types,
+        page=request.page,
+        source=adapter.source_name,
+    )
+    try:
+        result = await adapter.search(filters)
+        saved = store.save_search(result, filters)
+        jobs = store.list_jobs(search_id=saved["id"], limit=500)
+        return JSONResponse(
+            {
+                "search": saved,
+                "jobs": jobs,
+                "count": len(jobs),
+                "source": adapter.source_name,
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Search failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        try:
+            await adapter.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/searches")
+async def api_list_searches(limit: int = Query(50, ge=1, le=200)):
+    return JSONResponse({"searches": store.list_searches(limit=limit)})
+
+
+@app.get("/api/searches/{search_id}")
+async def api_get_search(search_id: str):
+    rec = store.get_search(search_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Search not found")
+    jobs = store.list_jobs(search_id=search_id, limit=1000)
+    meta = {k: v for k, v in rec.items() if k != "jobs"}
+    return JSONResponse({"search": meta, "jobs": jobs, "count": len(jobs)})
+
+
+@app.get("/api/discovery/jobs")
+async def api_list_discovery_jobs(
+    search_id: str | None = Query(None),
+    decision: str | None = Query(None),
+    q: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    if decision and decision not in VALID_DECISIONS:
+        raise HTTPException(status_code=400, detail="Invalid decision filter")
+    jobs = store.list_jobs(search_id=search_id, decision=decision, q=q, limit=limit)
+    return JSONResponse({"jobs": jobs, "count": len(jobs)})
+
+
+@app.post("/api/discovery/decision")
+async def api_set_decision(request: DecisionRequest):
+    try:
+        entry = store.set_decision(request.job_key, request.decision, request.notes)
+        return JSONResponse({"ok": True, "entry": entry})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/discovery/job/{job_key:path}")
+async def api_get_discovery_job(job_key: str):
+    job = store.get_job(job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JSONResponse({"job": job})
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
