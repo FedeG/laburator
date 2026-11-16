@@ -433,8 +433,9 @@ def process_interested(
             for skill in skills:
                 done += 1
                 out_path = _skill_output_path(config, run_date, job_data, skill)
-                if out_path.exists() and not force:
-                    typer.echo(f"  ↷ skip {skill} (exists, use --force to regenerate) [{done}/{total}]")
+                existing = None if force else _find_existing_skill_output(config, job_data, skill)
+                if existing is not None:
+                    typer.echo(f"  ↷ skip {skill} (exists: {existing.parent.parent.name}, use --force to regenerate) [{done}/{total}]")
                     skipped += 1
                     continue
                 typer.echo(f"  ⏳ {skill} [{done}/{total}]...", nl=False)
@@ -614,6 +615,28 @@ def _skill_output_path(config: LaburatorConfig, run_date: str, job: dict[str, An
     filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
     folder = f"{company_slug}-{job_slug}"[:80].rstrip("-") or "job"
     return config.resolved_output_dir / run_date / folder / filename
+
+
+def _find_existing_skill_output(config: LaburatorConfig, job: dict[str, Any], skill_name: str) -> Path | None:
+    """Find existing output for job+skill across all run-date folders (latest first)."""
+    company_slug = _pipeline_slugify(job.get("employer_name", "unknown"))
+    job_slug = _pipeline_slugify(job.get("job_title", "unknown"))
+    filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
+    folder = f"{company_slug}-{job_slug}"[:80].rstrip("-") or "job"
+    root = config.resolved_output_dir
+    if not root.is_dir():
+        return None
+    candidates: list[Path] = []
+    for date_dir in root.iterdir():
+        if not date_dir.is_dir() or date_dir.name in {"index", "cache"}:
+            continue
+        p = date_dir / folder / filename
+        if p.exists():
+            candidates.append(p)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: (p.parent.parent.name, p.stat().st_mtime), reverse=True)
+    return candidates[0]
 
 
 def _write_skill_output(path: Path, content: str, job: dict[str, Any], link: str = "") -> None:

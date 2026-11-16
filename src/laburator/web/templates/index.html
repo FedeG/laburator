@@ -196,6 +196,11 @@
                     <label for="searchSource">Fuente</label>
                     <select id="searchSource">
                         <option value="openninja">OpenNinja (jsearch)</option>
+                        <option value="arbeitnow">Arbeitnow (gratis, sin key)</option>
+                        <option value="remotive">Remotive (remoto, sin key)</option>
+                        <option value="jobicy">Jobicy (remoto, sin key)</option>
+                        <option value="apify_linkedin">Apify LinkedIn Jobs (token, crédito $5)</option>
+                        <option value="apify_indeed">Apify Indeed Jobs (token, crédito $5)</option>
                     </select>
                 </div>
                 <div>
@@ -617,8 +622,8 @@
 
         function renderExistingOutputs(existing) {
             const list = Array.isArray(existing) ? existing : [];
-            if (!list.length) return '<span style="color:#9ca3af;font-size:12px;">Sin salidas hoy</span>';
-            return '<span style="font-size:12px;color:#374151;">Salidas hoy: </span>' + list.map(s => `<span class="badge" title="Ya existe salida para ${esc(skillLabel(s))} (hoy)">${esc(skillLabel(s))} ✓</span>`).join(' ');
+            if (!list.length) return '<span style="color:#9ca3af;font-size:12px;">Sin salidas guardadas</span>';
+            return '<span style="font-size:12px;color:#374151;">Salidas: </span>' + list.map(s => `<span class="badge" title="Ya existe salida guardada para ${esc(skillLabel(s))}">${esc(skillLabel(s))} ✓</span>`).join(' ');
         }
 
         function setJobStatus(jobKey, msg, kind) {
@@ -650,12 +655,18 @@
                 const salary = job.job_salary ? `<span class="badge">${esc(job.job_salary)}</span>` : '';
                 const score = (job._score != null) ? `<span class="badge" title="Afinidad heurística con tu CV">Afinidad: ${esc(job._score)}</span>` : '';
                 const existing = job._existing_outputs || [];
+                const src = job._source ? `<span class="badge" title="Fuente">${esc(job._source)}</span>` : '';
+                let dupe = '';
+                if (job._dupe_group_size && job._dupe_group_size > 1) {
+                    const peers = Array.isArray(job._dupe_sources) ? job._dupe_sources.join(', ') : '';
+                    dupe = `<span class="badge" style="background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;" title="Posible duplicado (mismo título/empresa/link)${peers ? ' · también en: ' + esc(peers) : ''}">Posible duplicado${peers ? ' · ' + esc(peers) : ''}</span>`;
+                }
                 return `
                 <div class="job-card" data-key="${esc(key)}">
                     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;">
                         <div>
                             <div class="job-title">${title}</div>
-                            <div class="job-meta">${emp}${loc ? ' · ' + loc : ''} ${remote} ${salary} ${score}</div>
+                            <div class="job-meta">${emp}${loc ? ' · ' + loc : ''} ${src} ${remote} ${salary} ${score} ${dupe}</div>
                         </div>
                         <div>${decisionPill(dec)}</div>
                     </div>
@@ -752,8 +763,9 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || 'Error');
                 const job = data.job || {};
-                const existing = (job._existing_outputs || []).map(skillLabel).join(', ') || 'ninguna (hoy)';
-                const text = `Título: ${job.job_title || ''}\nEmpresa: ${job.employer_name || ''}\nUbicación: ${job.job_location || ''}\nRemoto: ${job.job_is_remote ? 'Sí' : 'No'}\nSalario: ${job.job_salary || ''}\nAfinidad (heurística CV): ${job._score != null ? job._score : 'n/a'}\nLink: ${job.job_apply_link || job.job_google_link || ''}\nEstado: ${job._decision || 'pending'}\nSalidas existentes hoy: ${existing}\n\nDescripción:\n${job.job_description || ''}`;
+                const existing = (job._existing_outputs || []).map(skillLabel).join(', ') || 'ninguna';
+                const dupInfo = (job._dupe_group_size && job._dupe_group_size > 1) ? `Sí (${job._dupe_group_size} en grupo${(job._dupe_sources||[]).length ? ', también en: ' + (job._dupe_sources||[]).join(', ') : ''})` : 'No';
+                const text = `Título: ${job.job_title || ''}\nEmpresa: ${job.employer_name || ''}\nUbicación: ${job.job_location || ''}\nFuente: ${job._source || ''}\nRemoto: ${job.job_is_remote ? 'Sí' : 'No'}\nSalario: ${job.job_salary || ''}\nAfinidad (heurística CV): ${job._score != null ? job._score : 'n/a'}\nLink: ${job.job_apply_link || job.job_google_link || ''}\nEstado: ${job._decision || 'pending'}\nSalidas existentes: ${existing}\nPosible duplicado: ${dupInfo}\n\nDescripción:\n${job.job_description || ''}`;
                 showFileModalFromText(job.job_title || 'Detalle', text);
             } catch (e) {
                 alert('Error: ' + e.message);

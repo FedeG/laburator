@@ -233,15 +233,16 @@ class JobSearchPipeline:
                 label = SKILL_LABELS.get(skill_name, skill_name)
                 completed += 1
                 out_path = self._output_path(run_date, job, skill_name)
-                if out_path.exists() and not force:
+                existing_path = None if force else self._find_existing_output_path(job, skill_name)
+                if existing_path is not None:
                     try:
-                        existing = out_path.read_text(encoding="utf-8")
+                        existing = existing_path.read_text(encoding="utf-8")
                     except Exception:
                         existing = ""
                     output_key = f"{job_idx}_{skill_name}"
                     outputs[output_key] = existing
                     skipped += 1
-                    print(f"    ↷ {label} — skipped (exists) ({completed}/{total})", flush=True)
+                    print(f"    ↷ {label} — skipped (exists: {existing_path.parent.parent.name}) ({completed}/{total})", flush=True)
                     continue
 
                 print(f"    ⏳ {label}... ({completed}/{total})", end="", flush=True)
@@ -315,6 +316,27 @@ class JobSearchPipeline:
         filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
         out_dir = self.config.resolved_output_dir / run_date / f"{company_slug}-{job_slug}"
         return out_dir / filename
+
+    def _find_existing_output_path(self, job: dict, skill_name: str) -> Path | None:
+        """Find existing output for job+skill across all run-date folders (latest first)."""
+        company_slug = _slugify(job.get("employer_name", "unknown"))
+        job_slug = _slugify(job.get("job_title", "unknown"))
+        filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
+        folder = f"{company_slug}-{job_slug}"
+        root = self.config.resolved_output_dir
+        if not root.is_dir():
+            return None
+        candidates: list[Path] = []
+        for date_dir in root.iterdir():
+            if not date_dir.is_dir() or date_dir.name in {"index", "cache"}:
+                continue
+            p = date_dir / folder / filename
+            if p.exists():
+                candidates.append(p)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: (p.parent.parent.name, p.stat().st_mtime), reverse=True)
+        return candidates[0]
 
     def _save_individual_output(
         self, run_date: str, job: dict, skill_name: str, content: str,

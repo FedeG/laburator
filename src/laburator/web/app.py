@@ -72,6 +72,65 @@ def _score_job(job: dict[str, Any], cv_tokens: set[str]) -> int:
     return score
 
 
+def _norm_text(s: str) -> str:
+    s = (s or "").lower().strip()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _norm_link(s: str) -> str:
+    s = (s or "").strip().lower()
+    if not s:
+        return ""
+    s = re.sub(r"^https?://", "", s)
+    s = s.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    return s
+
+
+def _dupe_signature(job: dict[str, Any]) -> str:
+    title = _norm_text(str(job.get("job_title") or ""))
+    emp = _norm_text(str(job.get("employer_name") or ""))
+    link = _norm_link(str(job.get("job_apply_link") or job.get("job_google_link") or ""))
+    # if no link, include coarse location to reduce false positives
+    loc = _norm_text(str(job.get("job_location") or "")) if not link else ""
+    if not title and not emp and not link:
+        return ""
+    return "|".join([title[:80], emp[:60], link[:120], loc[:40]])
+
+
+def _annotate_dupes(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[int]] = {}
+    sigs: list[str] = []
+    for idx, job in enumerate(jobs):
+        sig = _dupe_signature(job)
+        sigs.append(sig)
+        if sig:
+            groups.setdefault(sig, []).append(idx)
+    out = []
+    for idx, job in enumerate(jobs):
+        item = dict(job)
+        sig = sigs[idx]
+        peers = groups.get(sig, []) if sig else []
+        if len(peers) > 1:
+            item["_dupe_group_size"] = len(peers)
+            item["_is_dupe"] = peers[0] != idx
+            # list other sources/keys briefly
+            others = []
+            for j in peers:
+                if j == idx:
+                    continue
+                o = jobs[j]
+                others.append(str(o.get("_source") or "?"))
+            item["_dupe_sources"] = sorted(set(others))
+        else:
+            item["_dupe_group_size"] = 1
+            item["_is_dupe"] = False
+            item["_dupe_sources"] = []
+        out.append(item)
+    return out
+
+
 def _rank_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cv_tokens = _tokenize(_load_cv_text())
     ranked = []
@@ -81,6 +140,7 @@ def _rank_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item = _annotate_job_outputs(item)
         ranked.append(item)
     ranked.sort(key=lambda j: (j.get("_score", 0), str(j.get("_search_created_at") or "")), reverse=True)
+    ranked = _annotate_dupes(ranked)
     return ranked
 
 
@@ -151,15 +211,35 @@ def _discovery_folder_name(job_data: dict[str, Any], job_key_value: str = "") ->
     return folder_name
 
 
-def _existing_outputs_for_job(job_data: dict[str, Any], job_key_value: str = "") -> list[str]:
-    """Return skill names with existing output for today's run date (no LLM)."""
-    run_date = date.today().isoformat()
+def _find_existing_output_path(job_data: dict[str, Any], job_key_value: str, skill_name: str) -> Path | None:
+    """Find an existing output for job+skill across all run-date folders (latest first)."""
     folder = _discovery_folder_name(job_data, job_key_value)
+    filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
+    root = config.resolved_output_dir
+    if not root.is_dir():
+        return None
+    candidates: list[Path] = []
+    for date_dir in root.iterdir():
+        if not date_dir.is_dir():
+            continue
+        # skip index/cache dirs
+        if date_dir.name in {"index", "cache"}:
+            continue
+        p = date_dir / folder / filename
+        if p.exists():
+            candidates.append(p)
+    if not candidates:
+        return None
+    # prefer most recent run-date dir name, then mtime
+    candidates.sort(key=lambda p: (p.parent.parent.name, p.stat().st_mtime), reverse=True)
+    return candidates[0]
+
+
+def _existing_outputs_for_job(job_data: dict[str, Any], job_key_value: str = "") -> list[str]:
+    """Return skill names with existing output across any run date (no LLM)."""
     out: list[str] = []
     for skill in SKILL_NAMES:
-        filename = SKILL_FILENAMES.get(skill, skill) + ".md"
-        path = config.resolved_output_dir / run_date / folder / filename
-        if path.exists():
+        if _find_existing_output_path(job_data, job_key_value, skill) is not None:
             out.append(skill)
     return out
 
@@ -638,25 +718,27 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
     folder_name = _discovery_folder_name(job_data, request.job_key)
     filename = SKILL_FILENAMES.get(request.skill, request.skill) + ".md"
     out_path = config.resolved_output_dir / run_date / folder_name / filename
-    rel_path = out_path.relative_to(config.resolved_output_dir)
 
-    if out_path.exists() and not request.force:
-        try:
-            result = out_path.read_text(encoding="utf-8")
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to read existing output: {exc}")
-        return JSONResponse(
-            {
-                "content": result,
-                "filepath": str(out_path),
-                "rel_path": str(rel_path),
-                "filename": out_path.name,
-                "date": run_date,
-                "job_key": request.job_key,
-                "skipped": True,
-                "existing_outputs": _existing_outputs_for_job(job_data, request.job_key),
-            }
-        )
+    if not request.force:
+        existing = _find_existing_output_path(job_data, request.job_key, request.skill)
+        if existing is not None:
+            try:
+                result = existing.read_text(encoding="utf-8")
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Failed to read existing output: {exc}")
+            rel_existing = existing.relative_to(config.resolved_output_dir)
+            return JSONResponse(
+                {
+                    "content": result,
+                    "filepath": str(existing),
+                    "rel_path": str(rel_existing),
+                    "filename": existing.name,
+                    "date": existing.parent.parent.name,
+                    "job_key": request.job_key,
+                    "skipped": True,
+                    "existing_outputs": _existing_outputs_for_job(job_data, request.job_key),
+                }
+            )
 
     try:
         result = await _run_skill_for_job(job_data, request.skill)

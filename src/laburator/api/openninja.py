@@ -26,6 +26,36 @@ class OpenNinjaJobSearchClient(JobSearchClient):
         self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
 
+    @staticmethod
+    def _normalize_employment_types(raw: str) -> str:
+        """Map generic employment type tokens to JSearch/OpenNinja expected values."""
+        if not raw:
+            return ""
+        mapping = {
+            "fulltime": "FULLTIME",
+            "full-time": "FULLTIME",
+            "full_time": "FULLTIME",
+            "ft": "FULLTIME",
+            "parttime": "PARTTIME",
+            "part-time": "PARTTIME",
+            "part_time": "PARTTIME",
+            "pt": "PARTTIME",
+            "contract": "CONTRACTOR",
+            "contractor": "CONTRACTOR",
+            "intern": "INTERN",
+            "internship": "INTERN",
+        }
+        out: list[str] = []
+        for part in raw.replace("|", ",").split(","):
+            p = part.strip().lower()
+            if not p or p in {"remote", "on-site", "onsite", "hybrid"}:
+                # handled by remote_jobs_only/location filters, not employment_types
+                continue
+            mapped = mapping.get(p)
+            if mapped and mapped not in out:
+                out.append(mapped)
+        return ",".join(out)
+
     async def search(self, filters: JobSearchFilters) -> JobSearchResult:
         client = self._get_client()
         params: dict[str, Any] = {
@@ -35,8 +65,9 @@ class OpenNinjaJobSearchClient(JobSearchClient):
             "date_posted": filters.date_posted,
             "remote_jobs_only": str(filters.remote_only).lower(),
         }
-        if filters.employment_types:
-            params["employment_types"] = filters.employment_types
+        employment_types = self._normalize_employment_types(filters.employment_types or "")
+        if employment_types:
+            params["employment_types"] = employment_types
         if filters.page > 1:
             params["page"] = filters.page
 
@@ -51,9 +82,10 @@ class OpenNinjaJobSearchClient(JobSearchClient):
 
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
+                body = (exc.response.text or "").strip()
                 if status in (401, 403):
-                    logger.error("Job search API auth error: HTTP %d", status)
-                    raise
+                    logger.error("Job search API auth error: HTTP %d — %s", status, body[:500])
+                    raise RuntimeError(f"OpenNinja auth error HTTP {status}: {body[:500]}") from exc
                 if status == 429 or status >= 500:
                     last_error = exc
                     if attempt < MAX_RETRIES - 1:
@@ -71,9 +103,9 @@ class OpenNinjaJobSearchClient(JobSearchClient):
                 logger.error(
                     "Job search API error: HTTP %d — %s",
                     status,
-                    exc.response.text,
+                    body[:1000],
                 )
-                raise
+                raise RuntimeError(f"OpenNinja HTTP {status}: {body[:1000]}") from exc
 
             except Exception as exc:
                 last_error = exc
@@ -126,6 +158,7 @@ class OpenNinjaJobSearchClient(JobSearchClient):
                     "x-api-key": self._api_key,
                     "Content-Type": "application/json",
                 },
+                follow_redirects=True,
             )
         return self._client
 
