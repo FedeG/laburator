@@ -627,12 +627,13 @@
                 const dec = job._decision || 'pending';
                 const remote = job.job_is_remote ? '<span class="badge">Remoto</span>' : '';
                 const salary = job.job_salary ? `<span class="badge">${esc(job.job_salary)}</span>` : '';
+                const score = (job._score != null) ? `<span class="badge" title="Afinidad heurística con tu CV">Afinidad: ${esc(job._score)}</span>` : '';
                 return `
                 <div class="job-card" data-key="${esc(key)}">
                     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;">
                         <div>
                             <div class="job-title">${title}</div>
-                            <div class="job-meta">${emp}${loc ? ' · ' + loc : ''} ${remote} ${salary}</div>
+                            <div class="job-meta">${emp}${loc ? ' · ' + loc : ''} ${remote} ${salary} ${score}</div>
                         </div>
                         <div>${decisionPill(dec)}</div>
                     </div>
@@ -694,7 +695,7 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || 'Error');
                 const job = data.job || {};
-                const text = `Título: ${job.job_title || ''}\nEmpresa: ${job.employer_name || ''}\nUbicación: ${job.job_location || ''}\nRemoto: ${job.job_is_remote ? 'Sí' : 'No'}\nSalario: ${job.job_salary || ''}\nLink: ${job.job_apply_link || job.job_google_link || ''}\nEstado: ${job._decision || 'pending'}\n\nDescripción:\n${job.job_description || ''}`;
+                const text = `Título: ${job.job_title || ''}\nEmpresa: ${job.employer_name || ''}\nUbicación: ${job.job_location || ''}\nRemoto: ${job.job_is_remote ? 'Sí' : 'No'}\nSalario: ${job.job_salary || ''}\nAfinidad (heurística CV): ${job._score != null ? job._score : 'n/a'}\nLink: ${job.job_apply_link || job.job_google_link || ''}\nEstado: ${job._decision || 'pending'}\n\nDescripción:\n${job.job_description || ''}`;
                 showFileModalFromText(job.job_title || 'Detalle', text);
             } catch (e) {
                 alert('Error: ' + e.message);

@@ -30,6 +30,58 @@ from laburator.skills import (
 )
 from laburator.store import DECISION_PENDING, VALID_DECISIONS, JobIndexStore, job_key
 
+_STOPWORDS = {
+    "para", "con", "los", "las", "del", "una", "uno", "por", "que", "como", "más", "mas",
+    "the", "and", "for", "with", "you", "your", "our", "are", "will", "this", "that",
+    "from", "have", "has", "not", "but", "all", "can", "job", "work", "role", "team",
+    "experience", "years", "year", "skills", "ability", "looking", "required", "plus",
+}
+
+
+def _tokenize(text: str) -> set[str]:
+    words = re.findall(r"[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ0-9+#.]{3,}", (text or "").lower())
+    return {w for w in words if w not in _STOPWORDS}
+
+
+def _load_cv_text() -> str:
+    try:
+        path = config.resolved_cv_path
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
+
+
+def _score_job(job: dict[str, Any], cv_tokens: set[str]) -> int:
+    if not cv_tokens:
+        return 0
+    title = _tokenize(str(job.get("job_title") or ""))
+    employer = _tokenize(str(job.get("employer_name") or ""))
+    desc = _tokenize(str(job.get("job_description") or "")[:4000])
+    loc = _tokenize(str(job.get("job_location") or ""))
+    score = 0
+    score += len(title & cv_tokens) * 4
+    score += len(employer & cv_tokens) * 2
+    score += len(desc & cv_tokens)
+    score += len(loc & cv_tokens)
+    if job.get("job_is_remote"):
+        remote_hints = {"remote", "remoto", "distributed", "anywhere"}
+        if cv_tokens & remote_hints:
+            score += 2
+    return score
+
+
+def _rank_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cv_tokens = _tokenize(_load_cv_text())
+    ranked = []
+    for job in jobs:
+        item = dict(job)
+        item["_score"] = _score_job(item, cv_tokens)
+        ranked.append(item)
+    ranked.sort(key=lambda j: (j.get("_score", 0), str(j.get("_search_created_at") or "")), reverse=True)
+    return ranked
+
 
 config = LaburatorConfig()
 logger = logging.getLogger(__name__)
@@ -470,7 +522,7 @@ async def api_search(request: SearchRequest):
     try:
         result = await adapter.search(filters)
         saved = store.save_search(result, filters)
-        jobs = store.list_jobs(search_id=saved["id"], limit=500)
+        jobs = _rank_jobs(store.list_jobs(search_id=saved["id"], limit=500))
         return JSONResponse(
             {
                 "search": saved,
@@ -501,7 +553,7 @@ async def api_get_search(search_id: str):
     rec = store.get_search(search_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Search not found")
-    jobs = store.list_jobs(search_id=search_id, limit=1000)
+    jobs = _rank_jobs(store.list_jobs(search_id=search_id, limit=1000))
     meta = {k: v for k, v in rec.items() if k != "jobs"}
     return JSONResponse({"search": meta, "jobs": jobs, "count": len(jobs)})
 
@@ -515,7 +567,7 @@ async def api_list_discovery_jobs(
 ):
     if decision and decision not in VALID_DECISIONS:
         raise HTTPException(status_code=400, detail="Invalid decision filter")
-    jobs = store.list_jobs(search_id=search_id, decision=decision, q=q, limit=limit)
+    jobs = _rank_jobs(store.list_jobs(search_id=search_id, decision=decision, q=q, limit=limit))
     return JSONResponse({"jobs": jobs, "count": len(jobs)})
 
 
@@ -533,6 +585,9 @@ async def api_get_discovery_job(job_key: str):
     job = store.get_job(job_key)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    cv_tokens = _tokenize(_load_cv_text())
+    job = dict(job)
+    job["_score"] = _score_job(job, cv_tokens)
     return JSONResponse({"job": job})
 
 

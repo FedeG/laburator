@@ -20,8 +20,8 @@ Delivery strategy: ask-on-risk
 | T1 | S1 | inline | done | 22e86db | Store/index de búsquedas y decisiones (`src/laburator/store.py`) |
 | T2 | S2 | inline | done | 22e86db | Endpoints `/api/search`, `/api/searches*`, `/api/discovery/jobs`, `/api/discovery/decision`, `/api/discovery/job/*` |
 | T3 | S3 | inline | done | c396ca3 | Endpoint `/api/discovery/generate` genera skill desde job indexado y guarda salida/job.md |
-| T4 | S4 | inline | done | dcae998 | Pestaña UI “Buscar propuestas”: búsqueda, filtros, listado, decisión, generación y detalle |
-| T5 | S5 | inline | pending | - | Scoring heurístico y orden/recomendación básica |
+| T4 | S4 | inline | done | 1b9c255 | Pestaña UI “Buscar propuestas”: búsqueda, filtros, listado, decisión, generación y detalle |
+| T5 | S5 | inline | done | 198423c | Scoring heurístico local por afinidad CV↔job, ordenado y expuesto en API/UI |
 
 ## Log
 
@@ -34,4 +34,6 @@ L2. [2026-11-15] T1+T2: creado `store.py` (índice JSON en `output_dir/index/`, 
 
 L3. [2026-11-15] T3: refactor helpers de generación web y agregado `/api/discovery/generate` para ejecutar skills sobre `JobData` indexado, guardando output y `job.md` en carpeta por empresa-puesto. Verificación: `py_compile` y rutas cargadas OK. Commit c396ca3. Risk: none.
 
-L4. [2026-11-15] T4 (S4): agregada pestaña “Buscar propuestas” en `src/laburator/web/templates/index.html` con formulario de filtros/fuente, ejecución de búsqueda, listado con estado, acciones me interesa/no me interesa/pendiente, filtros por estado/texto, generación desde job indexado y vista de detalle. Verificación: `py_compile` app/store OK, import app + `_load_template` OK, rutas discovery/search presentes, template coherente (scripts balanceados, `tab-search`, `runSearch`). Risk: none.
+L4. [2026-11-15] T4 (S4): agregada pestaña “Buscar propuestas” en `src/laburator/web/templates/index.html` con formulario de filtros/fuente, ejecución de búsqueda, listado con estado, acciones me interesa/no me interesa/pendiente, filtros por estado/texto, generación desde job indexado y vista de detalle. Verificación: `py_compile` app/store OK, import app + `_load_template` OK, rutas discovery/search presentes, template coherente (scripts balanceados, `tab-search`, `runSearch`). Commit 1b9c255. Risk: none.
+
+L5. [2026-11-15] T5 (S5): scoring heurístico local en `web/app.py` (tokens CV vs título/empresa/descripción/ubicación, bonus remoto) aplicado y ordenado en `/api/search`, `/api/searches/{id}`, `/api/discovery/jobs` y `/api/discovery/job`; badge/valor de afinidad mostrado en listado y detalle UI. Verificación: `py_compile` y smoke test `_score_job` (match relevante > no relevante), import app OK. Risk: none.
