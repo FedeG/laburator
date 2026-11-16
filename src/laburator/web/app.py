@@ -4,9 +4,9 @@ Start with:
     uvicorn laburator.web.app:app --reload
 """
 
+import logging
 import os
 import re
-import logging
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -15,8 +15,8 @@ import markdown
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from weasyprint import HTML
 from pydantic import BaseModel
+from weasyprint import HTML
 
 from laburator.api import JobSearchAdapter, JobSearchFilters, create_search_adapter
 from laburator.config import LaburatorConfig
@@ -24,11 +24,12 @@ from laburator.llm.service import LLMService
 from laburator.skills import (
     SKILL_FILENAMES,
     SKILL_NAMES,
+    build_proposal_messages,
     build_user_messages,
     load_skill,
     response_format,
 )
-from laburator.store import DECISION_PENDING, VALID_DECISIONS, JobIndexStore, job_key
+from laburator.store import VALID_DECISIONS, JobIndexStore
 
 _STOPWORDS = {
     "para", "con", "los", "las", "del", "una", "uno", "por", "que", "como", "más", "mas",
@@ -142,7 +143,6 @@ def _rank_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ranked.sort(key=lambda j: (j.get("_score", 0), str(j.get("_search_created_at") or "")), reverse=True)
     ranked = _annotate_dupes(ranked)
     return ranked
-
 
 config = LaburatorConfig()
 logger = logging.getLogger(__name__)
@@ -324,6 +324,26 @@ async def generate_skill(
     if skill_name not in SKILL_NAMES:
         raise ValueError(f"Unknown skill. Available: {SKILL_NAMES}")
 
+    # Load CV context
+    cv_context = ""
+    if cv_path.exists():
+        try:
+            cv_context = cv_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    # Load wiki context (optional)
+    wiki_context = ""
+    if wiki_path.is_dir():
+        parts: list[str] = []
+        for md_file in sorted(wiki_path.glob("*.md")):
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                parts.append(f"## {md_file.stem}\n\n{content}")
+            except Exception:
+                continue
+        wiki_context = "\n\n---\n\n".join(parts)
+
     job_data: dict[str, Any] = {
         "job_id": f"manual-{os.getpid()}-{int(datetime.now().timestamp())}",
         "job_description": job_description,
@@ -334,6 +354,38 @@ async def generate_skill(
     }
     result = await _run_skill_for_job(job_data, skill_name)
 
+    # Load skill prompt
+    try:
+        system_prompt = load_skill(skill_name)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Skill '{skill_name}' not found")
+
+    # Build messages
+    if skill_name == "generarcv":
+        user_messages = build_proposal_messages(
+            proposal=job_description,
+            tips="",
+            cv_context=cv_context,
+            llmwiki_context=wiki_context,
+        )
+    else:
+        user_messages = build_user_messages(
+            skill_name, job_data, cv_context, wiki_context
+        )
+
+    # Call LLM
+    fmt = response_format(skill_name)
+    llm = LLMService(config)
+    try:
+        result = await llm.generate(
+            system_prompt=system_prompt,
+            user_messages=user_messages,
+            response_format=fmt,
+        )
+    finally:
+        await llm.close()
+
+    # Save output — determine folder name
     run_date = date.today().isoformat()
     now = datetime.now()
     if link and link.strip():
@@ -504,9 +556,17 @@ async def save_file(filepath: str, body: SaveContent):
 
 
 @app.get("/api/cv")
-async def get_cv():
-    """Read the CV from the configured path."""
+async def get_cv(download: bool = Query(False, alias="download")):
+    """Read the CV from the configured path, optionally as a file download."""
     cv_path = config.resolved_cv_path
+    if download:
+        if not cv_path.exists():
+            raise HTTPException(status_code=404, detail="CV file not found")
+        response = FileResponse(path=cv_path, filename=cv_path.name)
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{cv_path.name}"'
+        )
+        return response
     content = ""
     exists = cv_path.exists()
     if exists:
