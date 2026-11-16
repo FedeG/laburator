@@ -15,9 +15,9 @@ Delivery strategy: ask-on-risk
 
 | ID | S# | Route | Status | Commit | Notes |
 |---|---|---|---|---|---|
-| T1 | S1 | inline | done | 2180750 | `list` muestra índice+cache legacy; `run`/búsqueda resuelven por `_job_key` o `job_id` en índice y cache |
-| T2 | S2 | inline | in_progress | - | `search`/pipeline persiste en índice y expone filtros |
-| T3 | S3 | inline | pending | - | Comandos decisión y generación por job indexado |
+| T1 | S1 | inline | done | 77fe192 | `list` muestra índice+cache legacy; `run`/búsqueda resuelven por `_job_key` o `job_id` en índice y cache |
+| T2 | S2 | inline | done | 7877a3d | `search`/`synth` aceptan filtros extra y pipeline guarda resultados en índice además del cache legacy |
+| T3 | S3 | inline | done | 7877a3d | `decide` marca decisión en índice; `run` ejecuta skills por `job_key`/`job_id` indexado (T1) |
 
 ## Log
 
@@ -26,4 +26,8 @@ L1. [2026-11-15] User request (verbatim):
 
 Contexto: T1–T5 de `odd/tasks/v2-job-discovery.md` completados (commits hasta 7e70276, branch v2). Continuar con etapas restantes de `v2plan.md` (selección de fuente en config/CLI, paridad CLI, robustez). Sin push, sin tests. Se prioriza paridad CLI + integración con índice.
 
-L2. [2026-11-15] T1 (S1): `cli.py` usa `JobIndexStore` para listar búsquedas/jobs indexados y resolver jobs por `job_key` o `job_id` (`_find_job`) con fallback a cache legacy; `run` acepta key/index, `list` muestra índice y cache legacy. Verificación: `py_compile` OK. Risk: none.
+L2. [2026-11-15] T1 (S1): `cli.py` usa `JobIndexStore` para listar búsquedas/jobs indexados y resolver jobs por `job_key` o `job_id` (`_find_job`) con fallback a cache legacy; `run` acepta key/index, `list` muestra índice y cache legacy. Verificación: `py_compile` OK. Commit 77fe192. Risk: none.
+
+L3. [2026-11-15] T2 (S2): pipeline guarda `JobSearchResult`/filtros y persiste en `JobIndexStore` además del cache legacy; `fetch_jobs_node` pasa `date_posted`, `employment_types`, `page`, `source`. CLI `search` y `synth` exponen `--date-posted`, `--employment-types`, `--page`, `--source`. Verificación: `py_compile` y `python -m laburator.cli --help` OK. Commit 7877a3d. (Fuente configurable en CLI pero pipeline usa adapter OpenNinja por defecto.) Risk: none.
+
+L4. [2026-11-15] T3 (S3): agregado comando `decide <job_id|job_key> <pending|interested|rejected>` para curación en índice; `run` ya ejecuta skills sobre jobs indexados por key/id (compatibilidad legacy). Verificación: `py_compile` y `python -m laburator.cli decide --help` OK. Commit 7877a3d (incluido junto con T2 por race de git/amend). Risk: none.

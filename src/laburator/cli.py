@@ -15,7 +15,7 @@ import typer
 from laburator.config import LaburatorConfig
 from laburator.pipeline import JobSearchPipeline
 from laburator.skills import build_cv_to_tex_messages, build_proposal_messages, build_user_messages, load_skill, response_format
-from laburator.store import JobIndexStore
+from laburator.store import VALID_DECISIONS, JobIndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,15 @@ def search(
     pages: int = typer.Option(1, "--pages", "-p", help="Number of result pages to fetch"),
     remote: bool = typer.Option(False, "--remote", "-r", help="Only remote jobs"),
     country: str = typer.Option("us", "--country", "-c", help="Two-letter country code"),
+    date_posted: str = typer.Option("all", "--date-posted", help="Date posted filter (e.g. all, today, 3days, week, month)"),
+    employment_types: str = typer.Option("", "--employment-types", "-e", help="Comma-separated employment types (e.g. FULLTIME,CONTRACTOR)"),
+    page: int = typer.Option(1, "--page", help="Result page number"),
+    source: str = typer.Option("openninja", "--source", help="Search source/provider"),
 ) -> None:
-    """Fetch job listings and cache them (fetch-only mode).
+    """Fetch job listings and cache/index them (fetch-only mode).
 
     Runs the pipeline in ``fetch`` mode — no LLM calls are made.
-    Results are cached to the output directory for later use.
+    Results are cached to the output directory and saved to the search index.
     """
     config = _load_config()
 
@@ -49,6 +53,10 @@ def search(
         "num_pages": pages,
         "remote_only": remote,
         "country": country,
+        "date_posted": date_posted,
+        "employment_types": employment_types,
+        "page": page,
+        "source": source,
         "refresh": False,
     }
 
@@ -60,7 +68,7 @@ def search(
         for err in errors:
             typer.echo(f"  ⚠ {err}", err=True)
 
-    typer.echo(f"\nFound {len(jobs)} job(s) for '{query}':\n")
+    typer.echo(f"\nFound {len(jobs)} job(s) for '{query}' (source: {source}):\n")
     for i, job in enumerate(jobs, 1):
         _print_job_summary(i, job)
 
@@ -74,6 +82,10 @@ def synthesize(
     pages: int = typer.Option(1, "--pages", "-p", help="Number of result pages to fetch"),
     remote: bool = typer.Option(False, "--remote", "-r", help="Only remote jobs"),
     country: str = typer.Option("us", "--country", "-c", help="Two-letter country code"),
+    date_posted: str = typer.Option("all", "--date-posted", help="Date posted filter"),
+    employment_types: str = typer.Option("", "--employment-types", "-e", help="Comma-separated employment types"),
+    page: int = typer.Option(1, "--page", help="Result page number"),
+    source: str = typer.Option("openninja", "--source", help="Search source/provider"),
     refresh: bool = typer.Option(
         False, "--refresh", "-f", help="Re-fetch jobs even if cached",
     ),
@@ -85,7 +97,11 @@ def synthesize(
     the LLM, and saves the results to the output directory.
     """
     config = _load_config()
-    asyncio.run(_run_synthesize(config, query, pages, remote, country, refresh))
+    asyncio.run(
+        _run_synthesize(
+            config, query, pages, remote, country, date_posted, employment_types, page, source, refresh
+        )
+    )
 
 
 @app.command()
@@ -287,6 +303,27 @@ def list() -> None:
 
 
 @app.command()
+def decide(
+    job_id: str = typer.Argument(..., help="Job ID or job key to update"),
+    decision: str = typer.Argument(..., help="Decision: pending, interested, or rejected"),
+    notes: str = typer.Option("", "--notes", "-n", help="Optional notes"),
+) -> None:
+    """Set curation decision for an indexed job."""
+    if decision not in VALID_DECISIONS:
+        typer.echo(f"Invalid decision '{decision}'. Use one of: {', '.join(sorted(VALID_DECISIONS))}", err=True)
+        raise typer.Exit(1)
+    config = _load_config()
+    store = JobIndexStore(config.resolved_output_dir)
+    job = store.get_job(job_id)
+    if job is None:
+        typer.echo(f"Job '{job_id}' not found in index.", err=True)
+        raise typer.Exit(1)
+    key = job.get("_job_key") or job_id
+    entry = store.set_decision(key, decision, notes)
+    typer.echo(f"Decision set: {key} -> {entry.get('decision')}")
+
+
+@app.command()
 def config() -> None:
     """Show current runtime configuration.
 
@@ -342,6 +379,10 @@ async def _run_synthesize(
     pages: int = 1,
     remote: bool = False,
     country: str = "us",
+    date_posted: str = "all",
+    employment_types: str = "",
+    page: int = 1,
+    source: str = "openninja",
     refresh: bool = False,
 ) -> None:
     """Run the full pipeline asynchronously."""
@@ -352,6 +393,10 @@ async def _run_synthesize(
         "num_pages": pages,
         "remote_only": remote,
         "country": country,
+        "date_posted": date_posted,
+        "employment_types": employment_types,
+        "page": page,
+        "source": source,
         "refresh": refresh,
     }
 

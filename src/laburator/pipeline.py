@@ -14,7 +14,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from laburator.api import JobSearchAdapter, OpenNinjaJobSearchClient
+from laburator.api import JobSearchAdapter, JobSearchFilters, OpenNinjaJobSearchClient
 from laburator.config import LaburatorConfig
 from laburator.llm.service import LLMService
 from laburator.skills import (
@@ -26,6 +26,7 @@ from laburator.skills import (
     response_format,
 )
 from laburator.state import State
+from laburator.store import JobIndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ class JobSearchPipeline:
             "num_pages": state.get("num_pages", 1),
             "remote_only": state.get("remote_only", False),
             "country": state.get("country", "us"),
+            "date_posted": state.get("date_posted", "all"),
+            "employment_types": state.get("employment_types", ""),
+            "page": state.get("page", 1),
+            "source": state.get("source", getattr(self.search, "source_name", "openninja")),
             "refresh": state.get("refresh", False),
             "run_date": run_date,
             "errors": [],
@@ -89,22 +94,27 @@ class JobSearchPipeline:
 
         print(f"\n🔍 Searching for '{query}'...", end=" ", flush=True)
         try:
-            response = await self.search.search_jobs(
+            filters = JobSearchFilters(
                 query=query,
                 num_pages=state.get("num_pages", 1),
                 country=state.get("country", "us"),
+                date_posted=state.get("date_posted", "all"),
                 remote_only=state.get("remote_only", False),
+                employment_types=state.get("employment_types", ""),
+                page=state.get("page", 1),
+                source=state.get("source", getattr(self.search, "source_name", "openninja")),
             )
+            response = await self.search.search(filters)
             jobs = [job.model_dump() for job in response.data]
             print(f"{len(jobs)} job(s) found ✓", flush=True)
-            return {"all_jobs": jobs}
+            return {"all_jobs": jobs, "_search_result": response, "_search_filters": filters}
         except Exception as exc:
             print(f"failed ✗", flush=True)
             logger.exception("Failed to fetch jobs for query '%s'", query)
             return {"errors": state.get("errors", []) + [f"Fetch failed: {exc}"]}
 
     async def cache_jobs_node(self, state: State) -> dict[str, Any]:
-        """Save fetched jobs to a JSON cache file."""
+        """Save fetched jobs to legacy cache and search index."""
         jobs = state.get("all_jobs", [])
         query = state.get("query", "")
         if not jobs:
@@ -119,12 +129,23 @@ class JobSearchPipeline:
             cache_path.write_text(
                 json.dumps(jobs, indent=2, default=str), encoding="utf-8"
             )
-            print(f"✓", flush=True)
             logger.info("Cached %d jobs to %s", len(jobs), cache_path)
         except Exception as exc:
             print(f"failed: {exc}", flush=True)
             logger.warning("Failed to cache jobs: %s", exc)
+            return {}
 
+        # Persist to index when search result metadata is available
+        try:
+            result = state.get("_search_result")
+            filters = state.get("_search_filters")
+            if result is not None:
+                store = JobIndexStore(self.config.resolved_output_dir)
+                store.save_search(result, filters)
+        except Exception as exc:
+            logger.warning("Failed to save search index: %s", exc)
+
+        print(f"✓", flush=True)
         return {}  # No state mutation needed
 
     async def load_context_node(self, state: State) -> dict[str, Any]:
