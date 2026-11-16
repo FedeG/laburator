@@ -6,6 +6,7 @@ Start with:
 
 import os
 import re
+import logging
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from laburator.skills import (
 
 
 config = LaburatorConfig()
-
+logger = logging.getLogger(__name__)
 
 class GenerateRequest(BaseModel):
     job_description: str
@@ -164,6 +165,7 @@ async def index():
 @app.post("/generate")
 async def generate(request: GenerateRequest):
     """Generate a skill output from a manual job description."""
+    logger.info("Generating skill output with skill '%s'...", request.skill)
     try:
         result, filepath = await generate_skill(
             request.job_description,
@@ -233,11 +235,13 @@ async def list_outputs(
                 pass
         else:
             rel = str(f.relative_to(out_dir))
-            folders[key]["skills"].append({
-                "filename": f.name,
-                "rel_path": rel,
-                "size": f.stat().st_size,
-            })
+            folders[key]["skills"].append(
+                {
+                    "filename": f.name,
+                    "rel_path": rel,
+                    "size": f.stat().st_size,
+                }
+            )
         # Keep the most recent modification time
         folders[key]["modified"] = max(folders[key]["modified"], f.stat().st_mtime)
 
@@ -247,13 +251,15 @@ async def list_outputs(
     start = (page - 1) * page_size
     page_folders = all_folders[start : start + page_size]
 
-    return JSONResponse({
-        "folders": page_folders,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages,
-    })
+    return JSONResponse(
+        {
+            "folders": page_folders,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+    )
 
 
 @app.get("/api/file/{filepath:path}")
@@ -304,11 +310,13 @@ async def get_cv():
             content = cv_path.read_text(encoding="utf-8")
         except Exception:
             pass
-    return JSONResponse({
-        "content": content,
-        "path": str(cv_path),
-        "exists": exists,
-    })
+    return JSONResponse(
+        {
+            "content": content,
+            "path": str(cv_path),
+            "exists": exists,
+        }
+    )
 
 
 @app.put("/api/cv")
@@ -373,9 +381,13 @@ async def get_pdf(filepath: str):
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
 
     pdf_name = resolved_path.stem + ".pdf"
-    return Response(content=pdf_bytes, media_type="application/pdf", headers={
-        "Content-Disposition": f'attachment; filename="{pdf_name}"',
-    })
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{pdf_name}"',
+        },
+    )
 
 
 class PdfConvertBody(BaseModel):
@@ -392,12 +404,17 @@ async def convert_pdf(body: PdfConvertBody):
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
 
     pdf_name = body.filename.rstrip(".md") + ".pdf"
-    return Response(content=pdf_bytes, media_type="application/pdf", headers={
-        "Content-Disposition": f'attachment; filename="{pdf_name}"',
-    })
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{pdf_name}"',
+        },
+    )
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+
 
 def _load_template() -> str:
     """Read the HTML template from the templates directory."""

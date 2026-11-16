@@ -20,7 +20,7 @@ class LaburatorConfig(BaseSettings):
     # ── API credentials ─────────────────────────────────────────────────
     model_api_key: str = ""
     model_api_endpoint: str = "https://api.opencode.ai/v1"
-    model_name: str = "deepseek-v4-flash-free"
+    model_name: str = "big-pickle"
     job_search_api_key: str = ""
 
     # ── Paths ───────────────────────────────────────────────────────────
