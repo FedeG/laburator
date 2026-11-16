@@ -352,6 +352,7 @@ def config() -> None:
     typer.echo(f"  Model:                 {cfg.model_name}")
     typer.echo(f"  API Endpoint:          {cfg.model_api_endpoint}")
     typer.echo(f"  Model API Key:         {masked}")
+    typer.echo(f"  Job Search Source:     {cfg.job_search_source}")
     typer.echo(f"  Job Search API Key:    {js_masked}")
     typer.echo(f"  CV path:               {cfg.resolved_cv_path}")
     typer.echo(f"  LLM Wiki dir:          {cfg.resolved_llmwiki_dir}")

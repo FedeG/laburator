@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from weasyprint import HTML
 from pydantic import BaseModel
 
-from laburator.api import JobSearchAdapter, JobSearchFilters, OpenNinjaJobSearchClient
+from laburator.api import JobSearchAdapter, JobSearchFilters, create_search_adapter
 from laburator.config import LaburatorConfig
 from laburator.llm.service import LLMService
 from laburator.skills import (
@@ -106,7 +106,7 @@ class SearchRequest(BaseModel):
     date_posted: str = "all"
     employment_types: str = ""
     page: int = 1
-    source: str = "openninja"
+    source: str = ""  # defaults to config.job_search_source when empty
 
 
 class DecisionRequest(BaseModel):
@@ -122,15 +122,10 @@ class DiscoveryGenerateRequest(BaseModel):
 
 
 def _get_search_adapter(source: str) -> JobSearchAdapter:
-    src = (source or "openninja").lower()
-    if src == "openninja":
-        if not config.job_search_api_key:
-            raise HTTPException(
-                status_code=400,
-                detail="JOB_SEARCH_API_KEY is not configured for source 'openninja'.",
-            )
-        return JobSearchAdapter(OpenNinjaJobSearchClient(config.job_search_api_key))
-    raise HTTPException(status_code=400, detail=f"Unknown search source '{source}'.")
+    try:
+        return create_search_adapter(source or getattr(config, "job_search_source", "openninja"), config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _slugify(text: str) -> str:

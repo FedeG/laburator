@@ -14,7 +14,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from laburator.api import JobSearchAdapter, JobSearchFilters, OpenNinjaJobSearchClient
+from laburator.api import JobSearchAdapter, JobSearchFilters, create_search_adapter
 from laburator.config import LaburatorConfig
 from laburator.llm.service import LLMService
 from laburator.skills import (
@@ -50,15 +50,27 @@ class JobSearchPipeline:
         self,
         config: LaburatorConfig,
         search_adapter: JobSearchAdapter | None = None,
+        source: str | None = None,
     ) -> None:
         self.config = config
         self.llm = LLMService(config)
+        self._default_source = (source or getattr(config, "job_search_source", "openninja") or "openninja")
         if search_adapter is None:
-            client = OpenNinjaJobSearchClient(config.job_search_api_key)
-            search_adapter = JobSearchAdapter(client)
+            try:
+                search_adapter = create_search_adapter(self._default_source, config)
+            except Exception:
+                # allow construction without credentials for non-search flows; fetch will fail explicitly
+                from laburator.api import OpenNinjaJobSearchClient
+                search_adapter = JobSearchAdapter(OpenNinjaJobSearchClient(getattr(config, "job_search_api_key", "")))
         self.search = search_adapter
         # Backward-compatible attribute name used internally.
         self.api = search_adapter
+
+    def _adapter_for_source(self, source: str | None) -> JobSearchAdapter:
+        src = (source or self._default_source or getattr(self.config, "job_search_source", "openninja") or "openninja")
+        if src == self.search.source_name:
+            return self.search
+        return create_search_adapter(src, self.config)
 
     # ── Graph nodes ─────────────────────────────────────────────────────
 
@@ -92,8 +104,11 @@ class JobSearchPipeline:
         if not query:
             return {"errors": state.get("errors", []) + ["No query provided"]}
 
-        print(f"\n🔍 Searching for '{query}'...", end=" ", flush=True)
+        src = state.get("source") or self._default_source
+        print(f"\n🔍 Searching for '{query}' ({src})...", end=" ", flush=True)
+        adapter = None
         try:
+            adapter = self._adapter_for_source(src)
             filters = JobSearchFilters(
                 query=query,
                 num_pages=state.get("num_pages", 1),
@@ -102,9 +117,9 @@ class JobSearchPipeline:
                 remote_only=state.get("remote_only", False),
                 employment_types=state.get("employment_types", ""),
                 page=state.get("page", 1),
-                source=state.get("source", getattr(self.search, "source_name", "openninja")),
+                source=src,
             )
-            response = await self.search.search(filters)
+            response = await adapter.search(filters)
             jobs = [job.model_dump() for job in response.data]
             print(f"{len(jobs)} job(s) found ✓", flush=True)
             return {"all_jobs": jobs, "_search_result": response, "_search_filters": filters}
@@ -112,6 +127,12 @@ class JobSearchPipeline:
             print(f"failed ✗", flush=True)
             logger.exception("Failed to fetch jobs for query '%s'", query)
             return {"errors": state.get("errors", []) + [f"Fetch failed: {exc}"]}
+        finally:
+            if adapter is not None and adapter is not self.search:
+                try:
+                    await adapter.close()
+                except Exception:
+                    pass
 
     async def cache_jobs_node(self, state: State) -> dict[str, Any]:
         """Save fetched jobs to legacy cache and search index."""

@@ -22,6 +22,7 @@ class LaburatorConfig(BaseSettings):
     model_api_endpoint: str = "https://api.opencode.ai/v1"
     model_name: str = "big-pickle"
     job_search_api_key: str = ""
+    job_search_source: str = "openninja"
 
     # ── Paths ───────────────────────────────────────────────────────────
     cv_path: str = "cv.md"
