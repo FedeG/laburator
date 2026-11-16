@@ -78,6 +78,7 @@ def _rank_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for job in jobs:
         item = dict(job)
         item["_score"] = _score_job(item, cv_tokens)
+        item = _annotate_job_outputs(item)
         ranked.append(item)
     ranked.sort(key=lambda j: (j.get("_score", 0), str(j.get("_search_created_at") or "")), reverse=True)
     return ranked
@@ -139,6 +140,38 @@ def _slugify(text: str) -> str:
     text = re.sub(r"[^\w\s-]", "", text)
     text = re.sub(r"[-\s]+", "-", text)
     return text[:80].rstrip("-")
+
+
+def _discovery_folder_name(job_data: dict[str, Any], job_key_value: str = "") -> str:
+    company = _slugify(job_data.get("employer_name") or "unknown")
+    title = _slugify(job_data.get("job_title") or "job")
+    folder_name = f"{company}-{title}"[:80].rstrip("-")
+    if not folder_name:
+        folder_name = _slugify(job_key_value) or "job"
+    return folder_name
+
+
+def _existing_outputs_for_job(job_data: dict[str, Any], job_key_value: str = "") -> list[str]:
+    """Return skill names with existing output for today's run date (no LLM)."""
+    run_date = date.today().isoformat()
+    folder = _discovery_folder_name(job_data, job_key_value)
+    out: list[str] = []
+    for skill in SKILL_NAMES:
+        filename = SKILL_FILENAMES.get(skill, skill) + ".md"
+        path = config.resolved_output_dir / run_date / folder / filename
+        if path.exists():
+            out.append(skill)
+    return out
+
+
+def _annotate_job_outputs(job: dict[str, Any]) -> dict[str, Any]:
+    item = dict(job)
+    key = item.get("_job_key") or item.get("job_id") or ""
+    try:
+        item["_existing_outputs"] = _existing_outputs_for_job(item, str(key))
+    except Exception:
+        item["_existing_outputs"] = []
+    return item
 
 
 def _read_context(cv_path: Path, wiki_path: Path) -> tuple[str, str]:
@@ -602,12 +635,7 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
 
     job_data = {k: v for k, v in job.items() if not k.startswith("_")}
     run_date = date.today().isoformat()
-    company = _slugify(job_data.get("employer_name") or "unknown")
-    title = _slugify(job_data.get("job_title") or "job")
-    folder_name = f"{company}-{title}"[:80].rstrip("-")
-    if not folder_name:
-        folder_name = _slugify(request.job_key)
-
+    folder_name = _discovery_folder_name(job_data, request.job_key)
     filename = SKILL_FILENAMES.get(request.skill, request.skill) + ".md"
     out_path = config.resolved_output_dir / run_date / folder_name / filename
     rel_path = out_path.relative_to(config.resolved_output_dir)
@@ -626,6 +654,7 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
                 "date": run_date,
                 "job_key": request.job_key,
                 "skipped": True,
+                "existing_outputs": _existing_outputs_for_job(job_data, request.job_key),
             }
         )
 
@@ -661,6 +690,7 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
             "date": run_date,
             "job_key": request.job_key,
             "skipped": False,
+            "existing_outputs": _existing_outputs_for_job(job_data, request.job_key),
         }
     )
 

@@ -610,6 +610,26 @@
             return '<span class="pill pill-pending">Pendiente</span>';
         }
 
+        function skillLabel(skill) {
+            const map = {jobsynthesis:'Análisis', createcv:'CV', presentationletter:'Carta', interviewquestions:'Entrevista'};
+            return map[skill] || skill;
+        }
+
+        function renderExistingOutputs(existing) {
+            const list = Array.isArray(existing) ? existing : [];
+            if (!list.length) return '<span style="color:#9ca3af;font-size:12px;">Sin salidas hoy</span>';
+            return '<span style="font-size:12px;color:#374151;">Salidas hoy: </span>' + list.map(s => `<span class="badge" title="Ya existe salida para ${esc(skillLabel(s))} (hoy)">${esc(skillLabel(s))} ✓</span>`).join(' ');
+        }
+
+        function setJobStatus(jobKey, msg, kind) {
+            const sid = 'status-' + jobKey.replace(/[^a-zA-Z0-9_-]/g,'_');
+            const el = document.getElementById(sid);
+            if (!el) return;
+            el.style.display = msg ? 'block' : 'none';
+            el.textContent = msg || '';
+            el.style.color = kind === 'error' ? '#dc2626' : (kind === 'ok' ? '#16a34a' : '#6b7280');
+        }
+
         function renderJobs(jobs) {
             const list = document.getElementById('jobsList');
             if (!list) return;
@@ -619,6 +639,7 @@
             }
             list.innerHTML = jobs.map(job => {
                 const key = job._job_key || job.job_id || '';
+                const safeId = String(key).replace(/[^a-zA-Z0-9_-]/g,'_');
                 const title = esc(job.job_title || 'Sin título');
                 const emp = esc(job.employer_name || 'Sin empresa');
                 const loc = esc(job.job_location || (job.job_is_remote ? 'Remoto' : ''));
@@ -628,6 +649,7 @@
                 const remote = job.job_is_remote ? '<span class="badge">Remoto</span>' : '';
                 const salary = job.job_salary ? `<span class="badge">${esc(job.job_salary)}</span>` : '';
                 const score = (job._score != null) ? `<span class="badge" title="Afinidad heurística con tu CV">Afinidad: ${esc(job._score)}</span>` : '';
+                const existing = job._existing_outputs || [];
                 return `
                 <div class="job-card" data-key="${esc(key)}">
                     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;">
@@ -639,19 +661,23 @@
                     </div>
                     ${link ? `<div style="font-size:13px;margin-bottom:6px;"><a href="${esc(link)}" target="_blank"><i class="fa-solid fa-link"></i> Ver oferta</a></div>` : ''}
                     ${desc ? `<div class="job-desc">${desc}${(job.job_description||'').length>350?'…':''}</div>` : ''}
+                    <div id="existing-${safeId}" style="margin-bottom:8px;">${renderExistingOutputs(existing)}</div>
                     <div class="action-bar">
                         <button class="btn-sm btn-yes" onclick="setDecision('${esc(key)}','interested')"><i class="fa-regular fa-thumbs-up"></i> Me interesa</button>
                         <button class="btn-sm btn-no" onclick="setDecision('${esc(key)}','rejected')"><i class="fa-regular fa-thumbs-down"></i> No me interesa</button>
                         <button class="btn-sm btn-neutral" onclick="setDecision('${esc(key)}','pending')">Pendiente</button>
-                        <select id="skill-${esc(key).replace(/[^a-zA-Z0-9_-]/g,'_')}" style="width:auto;padding:6px 8px;font-size:13px;">
+                        <button class="btn-sm btn-outline-primary" onclick="enrichFromDiscovery('${esc(key)}')" title="Traer detalles completos y guardar en índice (sin LLM)"><i class="fa-solid fa-download"></i> Enriquecer</button>
+                        <select id="skill-${safeId}" style="width:auto;padding:6px 8px;font-size:13px;">
                             <option value="jobsynthesis">Análisis</option>
                             <option value="createcv">CV</option>
                             <option value="presentationletter">Carta</option>
                             <option value="interviewquestions">Entrevista</option>
                         </select>
+                        <label style="font-size:12px;color:#374151;display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" id="force-${safeId}"> Forzar regenerar</label>
                         <button class="btn-sm btn-outline-primary" onclick="generateFromDiscovery('${esc(key)}')"><i class="fa-solid fa-wand-magic-sparkles"></i> Generar</button>
                         <button class="btn-sm btn-outline-primary" onclick="showDiscoveryDetail('${esc(key)}')"><i class="fa-regular fa-eye"></i> Detalle</button>
                     </div>
+                    <div id="status-${safeId}" style="display:none;margin-top:6px;font-size:13px;"></div>
                 </div>`;
             }).join('');
         }
@@ -671,21 +697,52 @@
             }
         }
 
+        async function enrichFromDiscovery(jobKey) {
+            setJobStatus(jobKey, 'Enriqueciendo detalles (sin LLM)...', 'info');
+            try {
+                const res = await fetch('/api/discovery/enrich', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ job_key: jobKey })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Error al enriquecer');
+                setJobStatus(jobKey, 'Detalles enriquecidos y guardados en el índice.', 'ok');
+                await loadDiscoveryJobs();
+            } catch (e) {
+                setJobStatus(jobKey, 'Error al enriquecer: ' + e.message, 'error');
+            }
+        }
+
         async function generateFromDiscovery(jobKey) {
-            const sel = document.getElementById('skill-' + jobKey.replace(/[^a-zA-Z0-9_-]/g,'_'));
+            const safeId = jobKey.replace(/[^a-zA-Z0-9_-]/g,'_');
+            const sel = document.getElementById('skill-' + safeId);
+            const forceEl = document.getElementById('force-' + safeId);
             const skill = sel ? sel.value : 'jobsynthesis';
+            const force = !!(forceEl && forceEl.checked);
+            setJobStatus(jobKey, (force ? 'Regenerando' : 'Generando') + ' ' + skillLabel(skill) + ' (LLM, a pedido)...', 'info');
             try {
                 const res = await fetch('/api/discovery/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ job_key: jobKey, skill: skill })
+                    body: JSON.stringify({ job_key: jobKey, skill: skill, force: force })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
-                alert('Generado: ' + (data.filename || skill) + '\n' + (data.rel_path || ''));
+                if (data.skipped) {
+                    setJobStatus(jobKey, 'Salida existente reutilizada (sin gastar tokens). Activá "Forzar regenerar" para volver a generar.', 'ok');
+                } else {
+                    setJobStatus(jobKey, 'Generado: ' + (data.filename || skill) + (data.rel_path ? ' → ' + data.rel_path : ''), 'ok');
+                }
+                if (Array.isArray(data.existing_outputs)) {
+                    const ex = document.getElementById('existing-' + safeId);
+                    if (ex) ex.innerHTML = renderExistingOutputs(data.existing_outputs);
+                } else {
+                    await loadDiscoveryJobs();
+                }
                 refreshFiles();
             } catch (e) {
-                alert('Error al generar: ' + e.message);
+                setJobStatus(jobKey, 'Error al generar: ' + e.message, 'error');
             }
         }
 
@@ -695,7 +752,8 @@
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || 'Error');
                 const job = data.job || {};
-                const text = `Título: ${job.job_title || ''}\nEmpresa: ${job.employer_name || ''}\nUbicación: ${job.job_location || ''}\nRemoto: ${job.job_is_remote ? 'Sí' : 'No'}\nSalario: ${job.job_salary || ''}\nAfinidad (heurística CV): ${job._score != null ? job._score : 'n/a'}\nLink: ${job.job_apply_link || job.job_google_link || ''}\nEstado: ${job._decision || 'pending'}\n\nDescripción:\n${job.job_description || ''}`;
+                const existing = (job._existing_outputs || []).map(skillLabel).join(', ') || 'ninguna (hoy)';
+                const text = `Título: ${job.job_title || ''}\nEmpresa: ${job.employer_name || ''}\nUbicación: ${job.job_location || ''}\nRemoto: ${job.job_is_remote ? 'Sí' : 'No'}\nSalario: ${job.job_salary || ''}\nAfinidad (heurística CV): ${job._score != null ? job._score : 'n/a'}\nLink: ${job.job_apply_link || job.job_google_link || ''}\nEstado: ${job._decision || 'pending'}\nSalidas existentes hoy: ${existing}\n\nDescripción:\n${job.job_description || ''}`;
                 showFileModalFromText(job.job_title || 'Detalle', text);
             } catch (e) {
                 alert('Error: ' + e.message);
