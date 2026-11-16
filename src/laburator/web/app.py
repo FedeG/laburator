@@ -119,6 +119,7 @@ class DiscoveryGenerateRequest(BaseModel):
     job_key: str
     skill: str
     link: str = ""
+    force: bool = False
 
 
 def _get_search_adapter(source: str) -> JobSearchAdapter:
@@ -595,6 +596,34 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
         raise HTTPException(status_code=404, detail="Job not found")
 
     job_data = {k: v for k, v in job.items() if not k.startswith("_")}
+    run_date = date.today().isoformat()
+    company = _slugify(job_data.get("employer_name") or "unknown")
+    title = _slugify(job_data.get("job_title") or "job")
+    folder_name = f"{company}-{title}"[:80].rstrip("-")
+    if not folder_name:
+        folder_name = _slugify(request.job_key)
+
+    filename = SKILL_FILENAMES.get(request.skill, request.skill) + ".md"
+    out_path = config.resolved_output_dir / run_date / folder_name / filename
+    rel_path = out_path.relative_to(config.resolved_output_dir)
+
+    if out_path.exists() and not request.force:
+        try:
+            result = out_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read existing output: {exc}")
+        return JSONResponse(
+            {
+                "content": result,
+                "filepath": str(out_path),
+                "rel_path": str(rel_path),
+                "filename": out_path.name,
+                "date": run_date,
+                "job_key": request.job_key,
+                "skipped": True,
+            }
+        )
+
     try:
         result = await _run_skill_for_job(job_data, request.skill)
     except FileNotFoundError as exc:
@@ -602,13 +631,6 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
     except Exception as exc:
         logger.exception("Discovery generation failed")
         raise HTTPException(status_code=500, detail=str(exc))
-
-    run_date = date.today().isoformat()
-    company = _slugify(job_data.get("employer_name") or "unknown")
-    title = _slugify(job_data.get("job_title") or "job")
-    folder_name = f"{company}-{title}"[:80].rstrip("-")
-    if not folder_name:
-        folder_name = _slugify(request.job_key)
 
     link = request.link or job_data.get("job_apply_link") or job_data.get("job_google_link") or ""
     job_md_parts = ["# Job Description\n"]
@@ -633,6 +655,7 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
             "filename": out_path.name,
             "date": run_date,
             "job_key": request.job_key,
+            "skipped": False,
         }
     )
 

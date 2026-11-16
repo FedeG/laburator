@@ -90,6 +90,7 @@ class JobSearchPipeline:
             "page": state.get("page", 1),
             "source": state.get("source", getattr(self.search, "source_name", "openninja")),
             "refresh": state.get("refresh", False),
+            "force": state.get("force", False),
             "run_date": run_date,
             "errors": [],
             "outputs": {},
@@ -210,15 +211,18 @@ class JobSearchPipeline:
         }
 
     async def process_jobs_node(self, state: State) -> dict[str, Any]:
-        """Process each job through every configured skill."""
+        """Process each job through every configured skill (skips existing outputs unless force)."""
         jobs = state.get("all_jobs", [])
         cv_ctx = state.get("cv_context", "")
         wiki_ctx = state.get("llmwiki_context", "")
         errors: list[str] = list(state.get("errors", []))
         outputs: dict[str, str] = dict(state.get("outputs", {}))
+        force = bool(state.get("force", False))
+        run_date = state.get("run_date", date.today().isoformat())
 
         total = len(jobs) * len(SKILL_NAMES)
         completed = 0
+        skipped = 0
 
         for job_idx, job in enumerate(jobs):
             employer = job.get("employer_name", "unknown")
@@ -228,6 +232,18 @@ class JobSearchPipeline:
             for skill_name in SKILL_NAMES:
                 label = SKILL_LABELS.get(skill_name, skill_name)
                 completed += 1
+                out_path = self._output_path(run_date, job, skill_name)
+                if out_path.exists() and not force:
+                    try:
+                        existing = out_path.read_text(encoding="utf-8")
+                    except Exception:
+                        existing = ""
+                    output_key = f"{job_idx}_{skill_name}"
+                    outputs[output_key] = existing
+                    skipped += 1
+                    print(f"    ↷ {label} — skipped (exists) ({completed}/{total})", flush=True)
+                    continue
+
                 print(f"    ⏳ {label}... ({completed}/{total})", end="", flush=True)
 
                 try:
@@ -246,7 +262,6 @@ class JobSearchPipeline:
                     print(f"\r    ✅ {label} — {len(result)} chars     ", flush=True)
 
                     # Save immediately so user can see files appear
-                    run_date = state.get("run_date", date.today().isoformat())
                     self._save_individual_output(run_date, job, skill_name, result)
 
                 except Exception as exc:
@@ -255,6 +270,8 @@ class JobSearchPipeline:
                     logger.exception(msg)
                     errors.append(msg)
 
+        if skipped:
+            print(f"\n  ↷ Skipped {skipped} existing output(s) (use --force-process to regenerate)", flush=True)
         return {"outputs": outputs, "errors": errors}
 
     async def save_output_node(self, state: State) -> dict[str, Any]:
@@ -288,16 +305,19 @@ class JobSearchPipeline:
 
     # ── Output helpers ──────────────────────────────────────────────────
 
-    def _save_individual_output(
-        self, run_date: str, job: dict, skill_name: str, content: str,
-    ) -> None:
-        """Write a single skill output to disk immediately."""
+    def _output_path(self, run_date: str, job: dict, skill_name: str) -> Path:
         company_slug = _slugify(job.get("employer_name", "unknown"))
         job_slug = _slugify(job.get("job_title", "unknown"))
         filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
         out_dir = self.config.resolved_output_dir / run_date / f"{company_slug}-{job_slug}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / filename
+        return out_dir / filename
+
+    def _save_individual_output(
+        self, run_date: str, job: dict, skill_name: str, content: str,
+    ) -> None:
+        """Write a single skill output to disk immediately."""
+        out_path = self._output_path(run_date, job, skill_name)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             out_path.write_text(content, encoding="utf-8")
         except Exception as exc:

@@ -8,13 +8,24 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import date
 from pathlib import Path
+from typing import Any, List
 
 import typer
 
 from laburator.config import LaburatorConfig
-from laburator.pipeline import JobSearchPipeline
-from laburator.skills import build_cv_to_tex_messages, build_proposal_messages, build_user_messages, load_skill, response_format
+from laburator.llm.service import LLMService
+from laburator.pipeline import JobSearchPipeline, _slugify as _pipeline_slugify
+from laburator.skills import (
+    SKILL_FILENAMES,
+    SKILL_NAMES,
+    build_cv_to_tex_messages,
+    build_proposal_messages,
+    build_user_messages,
+    load_skill,
+    response_format,
+)
 from laburator.store import VALID_DECISIONS, JobIndexStore
 
 logger = logging.getLogger(__name__)
@@ -87,7 +98,10 @@ def synthesize(
     page: int = typer.Option(1, "--page", help="Result page number"),
     source: str = typer.Option("openninja", "--source", help="Search source/provider"),
     refresh: bool = typer.Option(
-        False, "--refresh", "-f", help="Re-fetch jobs even if cached",
+        False, "--refresh", "-r", help="Re-fetch jobs even if cached",
+    ),
+    force: bool = typer.Option(
+        False, "--force-process", help="Regenerate outputs even if they already exist",
     ),
 ) -> None:
     """Run the full pipeline: fetch, analyze, and generate output files.
@@ -99,7 +113,17 @@ def synthesize(
     config = _load_config()
     asyncio.run(
         _run_synthesize(
-            config, query, pages, remote, country, date_posted, employment_types, page, source, refresh
+            config,
+            query,
+            pages,
+            remote,
+            country,
+            date_posted,
+            employment_types,
+            page,
+            source,
+            refresh,
+            force,
         )
     )
 
@@ -323,6 +347,61 @@ def decide(
     typer.echo(f"Decision set: {key} -> {entry.get('decision')}")
 
 
+@app.command(name="process-interested")
+def process_interested(
+    skills: List[str] = typer.Option(..., "--skill", "-s", help="Skill to run (repeatable). Required explicit selection."),
+    force: bool = typer.Option(False, "--force", "-f", help="Regenerate even if output already exists"),
+) -> None:
+    """Process only jobs marked as interested, running only selected skills (explicit, on-demand)."""
+    config = _load_config()
+    for skill in skills:
+        if skill not in SKILL_NAMES:
+            typer.echo(f"Unknown skill '{skill}'. Available: {', '.join(SKILL_NAMES)}", err=True)
+            raise typer.Exit(1)
+
+    store = JobIndexStore(config.resolved_output_dir)
+    jobs = store.list_jobs(decision="interested", limit=1000)
+    if not jobs:
+        typer.echo("No interested jobs found in index.")
+        return
+
+    run_date = date.today().isoformat()
+    typer.echo(f"Processing {len(jobs)} interested job(s) with skills: {', '.join(skills)}")
+    generated = 0
+    skipped = 0
+    failed = 0
+
+    async def _run_all() -> None:
+        nonlocal generated, skipped, failed
+        total = len(jobs) * len(skills)
+        done = 0
+        for i, job in enumerate(jobs, 1):
+            title = job.get("job_title", "Unknown")
+            employer = job.get("employer_name", "Unknown")
+            key = job.get("_job_key") or job.get("job_id", "")
+            typer.echo(f"\n[{i}/{len(jobs)}] {title} @ {employer} [{key}]")
+            job_data = {k: v for k, v in job.items() if not k.startswith("_")}
+            for skill in skills:
+                done += 1
+                out_path = _skill_output_path(config, run_date, job_data, skill)
+                if out_path.exists() and not force:
+                    typer.echo(f"  ↷ skip {skill} (exists, use --force to regenerate) [{done}/{total}]")
+                    skipped += 1
+                    continue
+                typer.echo(f"  ⏳ {skill} [{done}/{total}]...", nl=False)
+                try:
+                    result = await _run_skill(config, job_data, skill)
+                    _write_skill_output(out_path, result, job_data)
+                    typer.echo(f" saved ✓ ({len(result)} chars)")
+                    generated += 1
+                except Exception as exc:
+                    typer.echo(f" failed ✗ ({exc})")
+                    failed += 1
+
+    asyncio.run(_run_all())
+    typer.echo(f"\nDone. generated={generated} skipped={skipped} failed={failed}")
+
+
 @app.command()
 def config() -> None:
     """Show current runtime configuration.
@@ -385,6 +464,7 @@ async def _run_synthesize(
     page: int = 1,
     source: str = "openninja",
     refresh: bool = False,
+    force: bool = False,
 ) -> None:
     """Run the full pipeline asynchronously."""
     pipeline = JobSearchPipeline(config)
@@ -399,6 +479,7 @@ async def _run_synthesize(
         "page": page,
         "source": source,
         "refresh": refresh,
+        "force": force,
     }
 
     try:
@@ -466,6 +547,46 @@ def _find_job(config: LaburatorConfig, job_id: str) -> dict | None:
         except Exception:
             continue
     return None
+
+
+def _skill_output_path(config: LaburatorConfig, run_date: str, job: dict[str, Any], skill_name: str) -> Path:
+    company_slug = _pipeline_slugify(job.get("employer_name", "unknown"))
+    job_slug = _pipeline_slugify(job.get("job_title", "unknown"))
+    filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
+    folder = f"{company_slug}-{job_slug}"[:80].rstrip("-") or "job"
+    return config.resolved_output_dir / run_date / folder / filename
+
+
+def _write_skill_output(path: Path, content: str, job: dict[str, Any], link: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    job_md = path.parent / "job.md"
+    if not job_md.exists():
+        parts = ["# Job Description\n"]
+        lk = link or job.get("job_apply_link") or job.get("job_google_link") or ""
+        if lk:
+            parts.append(f"\n**Link:** {lk}\n")
+        parts.append(f"\n**Title:** {job.get('job_title','')}\n")
+        parts.append(f"**Employer:** {job.get('employer_name','')}\n")
+        parts.append(f"**Location:** {job.get('job_location','')}\n\n")
+        parts.append(job.get("job_description") or "")
+        try:
+            job_md.write_text("".join(parts), encoding="utf-8")
+        except Exception:
+            pass
+
+
+async def _run_skill(config: LaburatorConfig, job: dict[str, Any], skill_name: str) -> str:
+    cv_context = _read_cv(config.resolved_cv_path)
+    wiki_context = _read_wiki(config.resolved_llmwiki_dir)
+    system_prompt = load_skill(skill_name)
+    user_messages = build_user_messages(skill_name, job, cv_context, wiki_context)
+    fmt = response_format(skill_name)
+    llm = LLMService(config)
+    try:
+        return await llm.generate(system_prompt=system_prompt, user_messages=user_messages, response_format=fmt)
+    finally:
+        await llm.close()
 
 
 def _read_cv(cv_path: Path) -> str:

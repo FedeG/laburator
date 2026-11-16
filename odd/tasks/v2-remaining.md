@@ -19,9 +19,9 @@ Test policy: no tests (prototipo). Verificación con `py_compile` y smoke checks
 
 | ID | S# | Route | Status | Commit | Notes |
 |---|---|---|---|---|---|
-| T1 | S1 | inline | done | 56cbe93 | `job_search_source`, factory `create_search_adapter`, wiring pipeline/web/CLI; `--source` efectivo |
-| T2 | S2,S4 | inline | in_progress | - | Batch `interested` explícito + skip/force reprocesos |
-| T3 | S3 | inline | pending | - | Enriquecimiento job_details bajo demanda (CLI/web) |
+| T1 | S1 | inline | done | cbac4b8 | `job_search_source`, factory `create_search_adapter`, wiring pipeline/web/CLI; `--source` efectivo |
+| T2 | S2,S4 | inline | done | 0b6f75f | Batch `interested` explícito + skip/force reprocesos (CLI/pipeline/web) |
+| T3 | S3 | inline | in_progress | - | Enriquecimiento job_details bajo demanda (CLI/web) |
 | T4 | S5 | inline | pending | - | Progreso y robustez mínima |
 | T5 | S6 | inline | pending | - | README y guía de uso v2 |
 
@@ -32,4 +32,6 @@ L1. [2026-11-15] User request (verbatim):
 
 Contexto: `odd/tasks/v2-job-discovery.md` y `odd/tasks/v2-cli-index-parity.md` completados (branch v2). Continuar con pasos restantes de `v2plan.md` respetando: sin análisis/generación LLM automática, solo bajo demanda y con selección explícita. Sin push, sin tests.
 
-L2. [2026-11-15] T1 (S1): agregado `job_search_source` en config y `create_search_adapter` (factory por fuente, valida credenciales; OpenNinja). Pipeline selecciona adapter por fuente efectiva (`_adapter_for_source`), web usa factory y default de config, CLI muestra fuente en `config`. `--source` en CLI/pipeline aplicado en fetch. Verificación: `py_compile` OK. Risk: none.
+L2. [2026-11-15] T1 (S1): agregado `job_search_source` en config y `create_search_adapter` (factory por fuente, valida credenciales; OpenNinja). Pipeline selecciona adapter por fuente efectiva (`_adapter_for_source`), web usa factory y default de config, CLI muestra fuente en `config`. `--source` en CLI/pipeline aplicado en fetch. Verificación: `py_compile` OK. Commit cbac4b8. Risk: none.
+
+L3. [2026-11-15] T2 (S2,S4): CLI `process-interested` procesa solo jobs `interested` con `--skill` repetible/requerido y `--force` opcional (on-demand, sin LLM automático). Pipeline `process_jobs_node` y `synth` (`--force-process`) omiten salidas existentes por defecto. Web `/api/discovery/generate` acepta `force` y devuelve salida existente sin llamar al LLM salvo `force=true`. Verificación: `py_compile`, `python -m laburator.cli --help` y `process-interested --help` OK. Risk: none.
