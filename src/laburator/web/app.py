@@ -63,6 +63,12 @@ class DecisionRequest(BaseModel):
     notes: str = ""
 
 
+class DiscoveryGenerateRequest(BaseModel):
+    job_key: str
+    skill: str
+    link: str = ""
+
+
 def _get_search_adapter(source: str) -> JobSearchAdapter:
     src = (source or "openninja").lower()
     if src == "openninja":
@@ -82,6 +88,65 @@ def _slugify(text: str) -> str:
     return text[:80].rstrip("-")
 
 
+def _read_context(cv_path: Path, wiki_path: Path) -> tuple[str, str]:
+    cv_context = ""
+    if cv_path.exists():
+        try:
+            cv_context = cv_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    wiki_context = ""
+    if wiki_path.is_dir():
+        parts: list[str] = []
+        for md_file in sorted(wiki_path.glob("*.md")):
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                parts.append(f"## {md_file.stem}\n\n{content}")
+            except Exception:
+                continue
+        wiki_context = "\n\n---\n\n".join(parts)
+    return cv_context, wiki_context
+
+
+def _save_skill_output(
+    run_date: str,
+    folder_name: str,
+    skill_name: str,
+    result: str,
+    job_md_content: str | None = None,
+) -> Path:
+    filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
+    out_dir = config.resolved_output_dir / run_date / folder_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
+    try:
+        out_path.write_text(result, encoding="utf-8")
+    except Exception as exc:
+        raise RuntimeError(f"Failed to save file: {exc}")
+    if job_md_content:
+        try:
+            (out_dir / "job.md").write_text(job_md_content, encoding="utf-8")
+        except Exception:
+            pass
+    return out_path
+
+
+async def _run_skill_for_job(job_data: dict[str, Any], skill_name: str) -> str:
+    cv_context, wiki_context = _read_context(config.resolved_cv_path, config.resolved_llmwiki_dir)
+    system_prompt = load_skill(skill_name)
+    user_messages = build_user_messages(skill_name, job_data, cv_context, wiki_context)
+    fmt = response_format(skill_name)
+    llm = LLMService(config)
+    try:
+        return await llm.generate(
+            system_prompt=system_prompt,
+            user_messages=user_messages,
+            response_format=fmt,
+        )
+    finally:
+        await llm.close()
+
+
 async def generate_skill(
     job_description: str,
     skill_name: str,
@@ -93,27 +158,6 @@ async def generate_skill(
     if skill_name not in SKILL_NAMES:
         raise ValueError(f"Unknown skill. Available: {SKILL_NAMES}")
 
-    # Load CV context
-    cv_context = ""
-    if cv_path.exists():
-        try:
-            cv_context = cv_path.read_text(encoding="utf-8")
-        except Exception:
-            pass
-
-    # Load wiki context (optional)
-    wiki_context = ""
-    if wiki_path.is_dir():
-        parts: list[str] = []
-        for md_file in sorted(wiki_path.glob("*.md")):
-            try:
-                content = md_file.read_text(encoding="utf-8")
-                parts.append(f"## {md_file.stem}\n\n{content}")
-            except Exception:
-                continue
-        wiki_context = "\n\n---\n\n".join(parts)
-
-    # Build minimal job_data from pasted description
     job_data: dict[str, Any] = {
         "job_id": f"manual-{os.getpid()}-{int(datetime.now().timestamp())}",
         "job_description": job_description,
@@ -122,61 +166,22 @@ async def generate_skill(
         "job_location": "",
         "job_is_remote": False,
     }
+    result = await _run_skill_for_job(job_data, skill_name)
 
-    # Load skill prompt
-    try:
-        system_prompt = load_skill(skill_name)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Skill '{skill_name}' not found")
-
-    # Build messages
-    user_messages = build_user_messages(skill_name, job_data, cv_context, wiki_context)
-
-    # Call LLM
-    fmt = response_format(skill_name)
-    llm = LLMService(config)
-    try:
-        result = await llm.generate(
-            system_prompt=system_prompt,
-            user_messages=user_messages,
-            response_format=fmt,
-        )
-    finally:
-        await llm.close()
-
-    # Save output — determine folder name
     run_date = date.today().isoformat()
     now = datetime.now()
-
     if link and link.strip():
-        # Use slugified link as folder name, files are just skill names
         folder_name = _slugify(link.strip())
     else:
-        # Generate a unique folder from date + time + job description slug
         timestamp = now.strftime("%H%M%S")
         desc_slug = _slugify(job_description[:60])[:40]
         folder_name = f"{run_date}-{timestamp}-{desc_slug}"
 
-    filename = SKILL_FILENAMES.get(skill_name, skill_name) + ".md"
-    out_dir = config.resolved_output_dir / run_date / folder_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / filename
-    try:
-        out_path.write_text(result, encoding="utf-8")
-    except Exception as exc:
-        raise RuntimeError(f"Failed to save file: {exc}")
-
-    # Also save/update job.md with the link and description
     job_md_parts = ["# Job Description\n"]
     if link and link.strip():
         job_md_parts.append(f"\n**Link:** {link.strip()}\n")
     job_md_parts.append(f"\n{job_description}")
-    job_md_path = out_dir / "job.md"
-    try:
-        job_md_path.write_text("".join(job_md_parts), encoding="utf-8")
-    except Exception:
-        pass  # non-critical
-
+    out_path = _save_skill_output(run_date, folder_name, skill_name, result, "".join(job_md_parts))
     return result, out_path
 
 
@@ -529,6 +534,57 @@ async def api_get_discovery_job(job_key: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"job": job})
+
+
+@app.post("/api/discovery/generate")
+async def api_discovery_generate(request: DiscoveryGenerateRequest):
+    if request.skill not in SKILL_NAMES:
+        raise HTTPException(status_code=400, detail=f"Unknown skill. Available: {SKILL_NAMES}")
+    job = store.get_job(request.job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_data = {k: v for k, v in job.items() if not k.startswith("_")}
+    try:
+        result = await _run_skill_for_job(job_data, request.skill)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Discovery generation failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    run_date = date.today().isoformat()
+    company = _slugify(job_data.get("employer_name") or "unknown")
+    title = _slugify(job_data.get("job_title") or "job")
+    folder_name = f"{company}-{title}"[:80].rstrip("-")
+    if not folder_name:
+        folder_name = _slugify(request.job_key)
+
+    link = request.link or job_data.get("job_apply_link") or job_data.get("job_google_link") or ""
+    job_md_parts = ["# Job Description\n"]
+    if link:
+        job_md_parts.append(f"\n**Link:** {link}\n")
+    job_md_parts.append(f"\n**Title:** {job_data.get('job_title','')}\n")
+    job_md_parts.append(f"**Employer:** {job_data.get('employer_name','')}\n")
+    job_md_parts.append(f"**Location:** {job_data.get('job_location','')}\n\n")
+    job_md_parts.append(job_data.get("job_description") or "")
+
+    try:
+        out_path = _save_skill_output(run_date, folder_name, request.skill, result, "".join(job_md_parts))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    rel_path = out_path.relative_to(config.resolved_output_dir)
+    return JSONResponse(
+        {
+            "content": result,
+            "filepath": str(out_path),
+            "rel_path": str(rel_path),
+            "filename": out_path.name,
+            "date": run_date,
+            "job_key": request.job_key,
+        }
+    )
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"

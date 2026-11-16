@@ -17,9 +17,9 @@ Delivery strategy: ask-on-risk
 
 | ID | S# | Route | Status | Commit | Notes |
 |---|---|---|---|---|---|
-| T1 | S1 | inline | pending | - | Store/index de búsquedas y decisiones |
-| T2 | S2 | inline | pending | - | Endpoints API búsqueda/listado/decisión |
-| T3 | S3 | inline | pending | - | Generación de skill desde job indexado |
+| T1 | S1 | inline | done | 22e86db | Store/index de búsquedas y decisiones (`src/laburator/store.py`) |
+| T2 | S2 | inline | done | 22e86db | Endpoints `/api/search`, `/api/searches*`, `/api/discovery/jobs`, `/api/discovery/decision`, `/api/discovery/job/*` |
+| T3 | S3 | inline | done | c6f6759 | Endpoint `/api/discovery/generate` genera skill desde job indexado y guarda salida/job.md |
 | T4 | S4 | inline | pending | - | Pestaña UI de búsqueda y curación |
 | T5 | S5 | inline | pending | - | Scoring heurístico y orden/recomendación básica |
 
@@ -29,3 +29,7 @@ L1. [2026-11-15] User request (verbatim):
 > "segui con las etapas planteadas"
 
 Contexto: Etapa 1 (abstracción JobSearch, commit 7f7ded2) completada en branch `v2`. Continuar con etapas v2 por incrementos con commits, sin push. Sin tests (prototipo).
+
+L2. [2026-11-15] T1+T2: creado `store.py` (índice JSON en `output_dir/index/`, búsquedas, decisiones pending/interested/rejected, lookup de jobs, cache legacy `cache/<slug>/jobs.json`). Agregados endpoints web de búsqueda/listado/decisión usando `JobSearchAdapter` y fuente `openninja`. Verificación: `py_compile` y carga de rutas con `.venv` OK. Commit 22e86db. Risk: none.
+
+L3. [2026-11-15] T3: refactor helpers de generación web y agregado `/api/discovery/generate` para ejecutar skills sobre `JobData` indexado, guardando output y `job.md` en carpeta por empresa-puesto. Verificación: `py_compile` y rutas cargadas OK. Commit c6f6759. Risk: none.
