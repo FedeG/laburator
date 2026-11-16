@@ -245,3 +245,41 @@ class JobIndexStore:
                 item["_search_query"] = rec.get("query")
                 return item
         return None
+
+    def merge_job_details(self, job_key_value: str, details: dict[str, Any]) -> dict[str, Any] | None:
+        """Merge fetched job details into the stored job record and persist. Returns updated job or None."""
+        if not isinstance(details, dict) or not details:
+            return self.get_job(job_key_value)
+        for rec in self._iter_search_records():
+            source = rec.get("source", "")
+            search_id = rec.get("id", "")
+            jobs = rec.get("jobs", []) or []
+            changed = False
+            for idx, job in enumerate(jobs):
+                if not isinstance(job, dict):
+                    continue
+                key = job.get("_job_key") or job_key(job, source)
+                matched = key == job_key_value or str(job.get("job_id") or "") == job_key_value
+                if not matched:
+                    continue
+                merged = dict(job)
+                for k, v in details.items():
+                    if v is None or v == "" or v == [] or v == {}:
+                        continue
+                    # prefer richer incoming description/details; overwrite when meaningful
+                    if k in ("job_description", "description", "job_highlights", "qualifications", "responsibilities", "benefits"):
+                        merged[k] = v
+                    else:
+                        merged.setdefault(k, v)
+                # keep meta keys stable
+                merged["_job_key"] = merged.get("_job_key") or key
+                merged["_source"] = merged.get("_source") or source
+                jobs[idx] = merged
+                rec["jobs"] = jobs
+                path = self.searches_dir / f"{search_id}.json"
+                _atomic_write_json(path, rec)
+                changed = True
+                break
+            if changed:
+                return self.get_job(job_key_value)
+        return None

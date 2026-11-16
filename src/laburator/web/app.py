@@ -122,6 +122,11 @@ class DiscoveryGenerateRequest(BaseModel):
     force: bool = False
 
 
+class DiscoveryEnrichRequest(BaseModel):
+    job_key: str
+    source: str = ""  # defaults to job's source or config
+
+
 def _get_search_adapter(source: str) -> JobSearchAdapter:
     try:
         return create_search_adapter(source or getattr(config, "job_search_source", "openninja"), config)
@@ -658,6 +663,45 @@ async def api_discovery_generate(request: DiscoveryGenerateRequest):
             "skipped": False,
         }
     )
+
+
+@app.post("/api/discovery/enrich")
+async def api_discovery_enrich(request: DiscoveryEnrichRequest):
+    """Fetch full job details on demand and merge into the index (no LLM)."""
+    job = store.get_job(request.job_key)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    key = job.get("_job_key") or request.job_key
+    src = request.source or job.get("_source") or getattr(config, "job_search_source", "openninja")
+    provider_job_id = str(job.get("job_id") or request.job_key)
+    if ":" in provider_job_id and provider_job_id.startswith(src + ":"):
+        provider_job_id = provider_job_id.split(":", 1)[1]
+
+    try:
+        adapter = create_search_adapter(src, config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        details = await adapter.job_details(provider_job_id)
+        if not isinstance(details, dict):
+            details = {"raw_details": details}
+        updated = store.merge_job_details(key, details) or {}
+        cv_tokens = _tokenize(_load_cv_text())
+        if updated:
+            updated = dict(updated)
+            updated["_score"] = _score_job(updated, cv_tokens)
+        return JSONResponse({"ok": True, "job_key": key, "job": updated})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Discovery enrich failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        try:
+            await adapter.close()
+        except Exception:
+            pass
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"

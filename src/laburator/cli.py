@@ -14,6 +14,7 @@ from typing import Any, List
 
 import typer
 
+from laburator.api import create_search_adapter
 from laburator.config import LaburatorConfig
 from laburator.llm.service import LLMService
 from laburator.pipeline import JobSearchPipeline, _slugify as _pipeline_slugify
@@ -345,6 +346,54 @@ def decide(
     key = job.get("_job_key") or job_id
     entry = store.set_decision(key, decision, notes)
     typer.echo(f"Decision set: {key} -> {entry.get('decision')}")
+
+
+@app.command()
+def enrich(
+    job_id: str = typer.Argument(..., help="Job ID or job key to enrich"),
+    source: str = typer.Option("", "--source", help="Search source/provider (defaults to job's source or config)"),
+) -> None:
+    """Fetch full job details on demand and merge into the index (no LLM)."""
+    config = _load_config()
+    store = JobIndexStore(config.resolved_output_dir)
+    job = store.get_job(job_id)
+    if job is None:
+        typer.echo(f"Job '{job_id}' not found in index.", err=True)
+        raise typer.Exit(1)
+    key = job.get("_job_key") or job_id
+    src = source or job.get("_source") or getattr(config, "job_search_source", "openninja")
+    provider_job_id = str(job.get("job_id") or job_id)
+    # if key is prefixed as source:id and job_id missing, try to extract id
+    if ":" in provider_job_id and provider_job_id.startswith(src + ":"):
+        provider_job_id = provider_job_id.split(":", 1)[1]
+
+    try:
+        adapter = create_search_adapter(src, config)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    async def _do() -> dict:
+        try:
+            details = await adapter.job_details(provider_job_id)
+            if not isinstance(details, dict):
+                details = {"raw_details": details}
+            updated = store.merge_job_details(key, details)
+            return updated or {}
+        finally:
+            try:
+                await adapter.close()
+            except Exception:
+                pass
+
+    typer.echo(f"Enriching {key} from source '{src}'...", nl=False)
+    try:
+        updated = asyncio.run(_do())
+    except Exception as exc:
+        typer.echo(f" failed ✗ ({exc})", err=True)
+        raise typer.Exit(1)
+    desc_len = len((updated.get("job_description") or "") if updated else "")
+    typer.echo(f" done ✓ (description chars: {desc_len})")
 
 
 @app.command(name="process-interested")
