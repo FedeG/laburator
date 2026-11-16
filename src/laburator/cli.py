@@ -15,6 +15,7 @@ import typer
 from laburator.config import LaburatorConfig
 from laburator.pipeline import JobSearchPipeline
 from laburator.skills import build_cv_to_tex_messages, build_proposal_messages, build_user_messages, load_skill, response_format
+from laburator.store import JobIndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -106,15 +107,9 @@ def run(
     """
     config = _load_config()
 
-    # Find job in cache
-    cache_root = config.resolved_output_dir / "cache"
-    if not cache_root.is_dir():
-        typer.echo("No cached jobs found. Run 'laburator search' first.", err=True)
-        raise typer.Exit(1)
-
-    job = _find_cached_job(cache_root, job_id)
+    job = _find_job(config, job_id)
     if job is None:
-        typer.echo(f"Job with ID '{job_id}' not found in cache.", err=True)
+        typer.echo(f"Job with ID/key '{job_id}' not found in cache or index.", err=True)
         raise typer.Exit(1)
 
     # Load context
@@ -233,37 +228,62 @@ def generar_cv(
 
 @app.command()
 def list() -> None:
-    """Show cached search results.
-
-    Lists all previously cached job searches and their job counts.
-    """
+    """Show cached and indexed search results."""
     config = _load_config()
     cache_root = config.resolved_output_dir / "cache"
+    store = JobIndexStore(config.resolved_output_dir)
 
-    if not cache_root.is_dir():
-        typer.echo("No cached searches found.")
-        return
+    shown_any = False
 
-    searches = sorted(cache_root.iterdir())
-    for search_dir in searches:
-        if not search_dir.is_dir():
-            continue
-        jobs_file = search_dir / "jobs.json"
-        if not jobs_file.exists():
-            continue
-        try:
-            jobs = json.loads(jobs_file.read_text(encoding="utf-8"))
-            query = search_dir.name.replace("-", " ").title()
-            typer.echo(f"  {search_dir.name}: {len(jobs)} job(s)")
-            for i, job in enumerate(jobs[:5], 1):
+    searches = store.list_searches(limit=50)
+    if searches:
+        shown_any = True
+        typer.echo("Indexed searches:")
+        for rec in searches:
+            sid = rec.get("id", "")
+            query = rec.get("query", "")
+            src = rec.get("source", "")
+            count = rec.get("count", 0)
+            created = rec.get("created_at", "")
+            typer.echo(f"  [{sid}] {query} ({src}) — {count} job(s) @ {created}")
+        typer.echo("")
+        jobs = store.list_jobs(limit=20)
+        if jobs:
+            typer.echo("Recent indexed jobs:")
+            for i, job in enumerate(jobs, 1):
                 title = job.get("job_title", "Unknown")
                 employer = job.get("employer_name", "Unknown")
-                job_id = job.get("job_id", "")
-                typer.echo(f"    {i}. {title} @ {employer}  [{job_id}]")
-            if len(jobs) > 5:
-                typer.echo(f"    ... and {len(jobs) - 5} more")
-        except Exception as exc:
-            typer.echo(f"  {search_dir.name}: (error reading cache — {exc})")
+                key = job.get("_job_key") or job.get("job_id", "")
+                dec = job.get("_decision", "pending")
+                score = job.get("_score")
+                extra = f" score={score}" if score is not None else ""
+                typer.echo(f"    {i}. {title} @ {employer} [{key}] ({dec}{extra})")
+            typer.echo("")
+
+    if cache_root.is_dir():
+        legacy = sorted([p for p in cache_root.iterdir() if p.is_dir()])
+        if legacy:
+            shown_any = True
+            typer.echo("Legacy cache:")
+            for search_dir in legacy:
+                jobs_file = search_dir / "jobs.json"
+                if not jobs_file.exists():
+                    continue
+                try:
+                    jobs = json.loads(jobs_file.read_text(encoding="utf-8"))
+                    typer.echo(f"  {search_dir.name}: {len(jobs)} job(s)")
+                    for i, job in enumerate(jobs[:5], 1):
+                        title = job.get("job_title", "Unknown")
+                        employer = job.get("employer_name", "Unknown")
+                        job_id = job.get("job_id", "")
+                        typer.echo(f"    {i}. {title} @ {employer}  [{job_id}]")
+                    if len(jobs) > 5:
+                        typer.echo(f"    ... and {len(jobs) - 5} more")
+                except Exception as exc:
+                    typer.echo(f"  {search_dir.name}: (error reading cache — {exc})")
+
+    if not shown_any:
+        typer.echo("No cached or indexed searches found.")
 
 
 @app.command()
@@ -375,8 +395,17 @@ def _print_job_summary(index: int, job: dict) -> None:
     typer.echo(f"      ID: {job_id}")
 
 
-def _find_cached_job(cache_root: Path, job_id: str) -> dict | None:
-    """Search all cached searches for a job with the given ID."""
+def _find_job(config: LaburatorConfig, job_id: str) -> dict | None:
+    """Search indexed jobs and legacy cache for a job by key or job_id."""
+    store = JobIndexStore(config.resolved_output_dir)
+    job = store.get_job(job_id)
+    if job is not None:
+        # strip meta keys for LLM context cleanliness
+        return {k: v for k, v in job.items() if not k.startswith("_")}
+
+    cache_root = config.resolved_output_dir / "cache"
+    if not cache_root.is_dir():
+        return None
     for search_dir in cache_root.iterdir():
         if not search_dir.is_dir():
             continue
@@ -386,7 +415,7 @@ def _find_cached_job(cache_root: Path, job_id: str) -> dict | None:
         try:
             jobs = json.loads(jobs_file.read_text(encoding="utf-8"))
             for job in jobs:
-                if job.get("job_id") == job_id:
+                if str(job.get("job_id", "")) == str(job_id):
                     return job
         except Exception:
             continue
