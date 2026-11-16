@@ -14,7 +14,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from laburator.api.client import JobSearchClient
+from laburator.api import JobSearchAdapter, OpenNinjaJobSearchClient
 from laburator.config import LaburatorConfig
 from laburator.llm.service import LLMService
 from laburator.skills import (
@@ -45,10 +45,19 @@ class JobSearchPipeline:
     loading, LLM processing, and output saving.
     """
 
-    def __init__(self, config: LaburatorConfig) -> None:
+    def __init__(
+        self,
+        config: LaburatorConfig,
+        search_adapter: JobSearchAdapter | None = None,
+    ) -> None:
         self.config = config
         self.llm = LLMService(config)
-        self.api = JobSearchClient(config.job_search_api_key)
+        if search_adapter is None:
+            client = OpenNinjaJobSearchClient(config.job_search_api_key)
+            search_adapter = JobSearchAdapter(client)
+        self.search = search_adapter
+        # Backward-compatible attribute name used internally.
+        self.api = search_adapter
 
     # ── Graph nodes ─────────────────────────────────────────────────────
 
@@ -73,18 +82,18 @@ class JobSearchPipeline:
         }
 
     async def fetch_jobs_node(self, state: State) -> dict[str, Any]:
-        """Fetch job listings from the API."""
+        """Fetch job listings from the configured search source."""
         query = state.get("query", "")
         if not query:
             return {"errors": state.get("errors", []) + ["No query provided"]}
 
         print(f"\n🔍 Searching for '{query}'...", end=" ", flush=True)
         try:
-            response = await self.api.search_v2(
+            response = await self.search.search_jobs(
                 query=query,
                 num_pages=state.get("num_pages", 1),
                 country=state.get("country", "us"),
-                remote_jobs_only=state.get("remote_only", False),
+                remote_only=state.get("remote_only", False),
             )
             jobs = [job.model_dump() for job in response.data]
             print(f"{len(jobs)} job(s) found ✓", flush=True)
@@ -328,4 +337,4 @@ class JobSearchPipeline:
     async def aclose(self) -> None:
         """Release held resources."""
         await self.llm.close()
-        await self.api.close()
+        await self.search.close()
