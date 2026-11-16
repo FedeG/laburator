@@ -19,8 +19,8 @@ Delivery strategy: ask-on-risk
 |---|---|---|---|---|---|
 | T1 | S1 | inline | done | 22e86db | Store/index de búsquedas y decisiones (`src/laburator/store.py`) |
 | T2 | S2 | inline | done | 22e86db | Endpoints `/api/search`, `/api/searches*`, `/api/discovery/jobs`, `/api/discovery/decision`, `/api/discovery/job/*` |
-| T3 | S3 | inline | done | c6f6759 | Endpoint `/api/discovery/generate` genera skill desde job indexado y guarda salida/job.md |
-| T4 | S4 | inline | pending | - | Pestaña UI de búsqueda y curación |
+| T3 | S3 | inline | done | c396ca3 | Endpoint `/api/discovery/generate` genera skill desde job indexado y guarda salida/job.md |
+| T4 | S4 | inline | done | dcae998 | Pestaña UI “Buscar propuestas”: búsqueda, filtros, listado, decisión, generación y detalle |
 | T5 | S5 | inline | pending | - | Scoring heurístico y orden/recomendación básica |
 
 ## Log
@@ -32,4 +32,6 @@ Contexto: Etapa 1 (abstracción JobSearch, commit 7f7ded2) completada en branch 
 
 L2. [2026-11-15] T1+T2: creado `store.py` (índice JSON en `output_dir/index/`, búsquedas, decisiones pending/interested/rejected, lookup de jobs, cache legacy `cache/<slug>/jobs.json`). Agregados endpoints web de búsqueda/listado/decisión usando `JobSearchAdapter` y fuente `openninja`. Verificación: `py_compile` y carga de rutas con `.venv` OK. Commit 22e86db. Risk: none.
 
-L3. [2026-11-15] T3: refactor helpers de generación web y agregado `/api/discovery/generate` para ejecutar skills sobre `JobData` indexado, guardando output y `job.md` en carpeta por empresa-puesto. Verificación: `py_compile` y rutas cargadas OK. Commit c6f6759. Risk: none.
+L3. [2026-11-15] T3: refactor helpers de generación web y agregado `/api/discovery/generate` para ejecutar skills sobre `JobData` indexado, guardando output y `job.md` en carpeta por empresa-puesto. Verificación: `py_compile` y rutas cargadas OK. Commit c396ca3. Risk: none.
+
+L4. [2026-11-15] T4 (S4): agregada pestaña “Buscar propuestas” en `src/laburator/web/templates/index.html` con formulario de filtros/fuente, ejecución de búsqueda, listado con estado, acciones me interesa/no me interesa/pendiente, filtros por estado/texto, generación desde job indexado y vista de detalle. Verificación: `py_compile` app/store OK, import app + `_load_template` OK, rutas discovery/search presentes, template coherente (scripts balanceados, `tab-search`, `runSearch`). Risk: none.
