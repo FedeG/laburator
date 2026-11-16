@@ -265,8 +265,12 @@ class JobSearchPipeline:
                     self._save_individual_output(run_date, job, skill_name, result)
 
                 except Exception as exc:
-                    print(f"\r    ❌ {label} — failed: {exc}     ", flush=True)
-                    msg = f"Skill '{skill_name}' failed for job {job_idx}: {exc}"
+                    emsg = str(exc)
+                    low = emsg.lower()
+                    if "429" in emsg or "rate" in low or "quota" in low or "too many" in low:
+                        emsg = f"rate limit/quota exceeded ({emsg})"
+                    print(f"\r    ❌ {label} — failed: {emsg}     ", flush=True)
+                    msg = f"Skill '{skill_name}' failed for job {job_idx}: {emsg}"
                     logger.exception(msg)
                     errors.append(msg)
 

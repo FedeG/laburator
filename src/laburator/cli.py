@@ -390,7 +390,7 @@ def enrich(
     try:
         updated = asyncio.run(_do())
     except Exception as exc:
-        typer.echo(f" failed ✗ ({exc})", err=True)
+        typer.echo(f" failed ✗ ({_friendly_error(exc)})", err=True)
         raise typer.Exit(1)
     desc_len = len((updated.get("job_description") or "") if updated else "")
     typer.echo(f" done ✓ (description chars: {desc_len})")
@@ -444,7 +444,7 @@ def process_interested(
                     typer.echo(f" saved ✓ ({len(result)} chars)")
                     generated += 1
                 except Exception as exc:
-                    typer.echo(f" failed ✗ ({exc})")
+                    typer.echo(f" failed ✗ ({_friendly_error(exc)})")
                     failed += 1
 
     asyncio.run(_run_all())
@@ -500,6 +500,16 @@ def _load_config() -> LaburatorConfig:
             err=True,
         )
     return config
+
+
+def _friendly_error(exc: Exception) -> str:
+    msg = str(exc)
+    low = msg.lower()
+    if "429" in msg or "rate" in low or "quota" in low or "too many" in low:
+        return f"rate limit/quota exceeded ({msg})"
+    if "timeout" in low or "timed out" in low:
+        return f"timeout ({msg})"
+    return msg
 
 
 async def _run_synthesize(

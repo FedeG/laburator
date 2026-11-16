@@ -21,9 +21,9 @@ Test policy: no tests (prototipo). Verificación con `py_compile` y smoke checks
 |---|---|---|---|---|---|
 | T1 | S1 | inline | done | cbac4b8 | `job_search_source`, factory `create_search_adapter`, wiring pipeline/web/CLI; `--source` efectivo |
 | T2 | S2,S4 | inline | done | d2de915 | Batch `interested` explícito + skip/force reprocesos (CLI/pipeline/web) |
-| T3 | S3 | inline | in_progress | - | Enriquecimiento job_details bajo demanda (CLI/web) |
-| T4 | S5 | inline | pending | - | Progreso y robustez mínima |
-| T5 | S6 | inline | pending | - | README y guía de uso v2 |
+| T3 | S3 | inline | done | d6da35c | `enrich` CLI y `/api/discovery/enrich` (on-demand, merge en índice, sin LLM) |
+| T4 | S5 | inline | done | 20f909f | Progreso/errores claros (rate limit/timeout) y lecturas de índice tolerantes |
+| T5 | S6 | inline | in_progress | - | README y guía de uso v2 |
 
 ## Log
 
@@ -36,4 +36,6 @@ L2. [2026-11-15] T1 (S1): agregado `job_search_source` en config y `create_searc
 
 L3. [2026-11-15] T2 (S2,S4): CLI `process-interested` procesa solo jobs `interested` con `--skill` repetible/requerido y `--force` opcional (on-demand, sin LLM automático). Pipeline `process_jobs_node` y `synth` (`--force-process`) omiten salidas existentes por defecto. Web `/api/discovery/generate` acepta `force` y devuelve salida existente sin llamar al LLM salvo `force=true`. Verificación: `py_compile`, `python -m laburator.cli --help` y `process-interested --help` OK. Commit d2de915. Risk: none.
 
-L4. [2026-11-15] T3 (S3): agregado `JobIndexStore.merge_job_details` y enriquecimiento explícito bajo demanda (sin LLM): comando CLI `enrich <job_id|job_key>` y endpoint `POST /api/discovery/enrich` que traen `job_details` del proveedor y guardan/mergean en el índice. Verificación: `py_compile` y `enrich --help` OK. Risk: none.
+L4. [2026-11-15] T3 (S3): agregado `JobIndexStore.merge_job_details` y enriquecimiento explícito bajo demanda (sin LLM): comando CLI `enrich <job_id|job_key>` y endpoint `POST /api/discovery/enrich` que traen `job_details` del proveedor y guardan/mergean en el índice. Verificación: `py_compile` y `enrich --help` OK. Commit d6da35c. Risk: none.
+
+L5. [2026-11-15] T4 (S5): mensajes de error más claros en CLI/pipeline para rate limits/quotas y timeouts (`_friendly_error`, manejo en batch y enrich) manteniendo progreso en operaciones batch; lecturas de índice/cache tolerantes via `_safe_read_json`. Verificación: `py_compile` OK. Risk: none.
